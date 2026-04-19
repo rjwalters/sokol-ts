@@ -1,15 +1,10 @@
 import {
   type SgBuffer, type SgImage, type SgSampler, type SgShader, type SgPipeline,
   type BufferDesc, type ImageDesc, type SamplerDesc, type ShaderDesc, type PipelineDesc,
-  type Bindings, type PassDesc, type Gfx, type DrawStats,
-  BufferUsage, IndexType, LoadAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
+  type Bindings, type PassDesc, type Gfx, type DrawStats, type ShaderRecompileResult,
+  BufferUsage, IndexType, LoadAction, StoreAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
   FilterMode, WrapMode,
 } from "./types.js";
-
-let nextId = 1;
-function handle<T extends { readonly _brand: string; readonly id: number }>(brand: string): T {
-  return { _brand: brand, id: nextId++ } as unknown as T;
-}
 
 interface BufferSlot {
   gpu: GPUBuffer;
@@ -31,6 +26,8 @@ interface ShaderSlot {
   fragmentModule: GPUShaderModule;
   vertexEntry: string;
   fragmentEntry: string;
+  vertexSource: string;
+  fragmentSource: string;
 }
 
 interface PipelineSlot {
@@ -45,6 +42,11 @@ export function createGfx(
   context: GPUCanvasContext,
   format: GPUTextureFormat,
 ): Gfx {
+  let nextId = 1;
+  function handle<T extends { readonly _brand: string; readonly id: number }>(brand: string): T {
+    return { _brand: brand, id: nextId++ } as unknown as T;
+  }
+
   const buffers = new Map<number, BufferSlot>();
   const images = new Map<number, ImageSlot>();
   const samplers = new Map<number, SamplerSlot>();
@@ -97,6 +99,9 @@ export function createGfx(
     get device() { return device; },
     get width() { return canvas.width; },
     get height() { return canvas.height; },
+    get cssWidth() { return canvas.clientWidth; },
+    get cssHeight() { return canvas.clientHeight; },
+    get dpiScale() { return canvas.width / (canvas.clientWidth || 1); },
     get dt() { return frameTime; },
     get frameCount() { return _frameCount; },
     get frameStats(): DrawStats { return { ..._frameStats }; },
@@ -129,6 +134,7 @@ export function createGfx(
         size: { width: desc.width, height: desc.height },
         format: fmt,
         usage,
+        sampleCount: desc.sampleCount ?? 1,
         label: desc.label,
       });
       if (desc.data) {
@@ -189,7 +195,9 @@ export function createGfx(
 
       const vertexEntry = desc.vertexEntry ?? "vs_main";
       const fragmentEntry = desc.fragmentEntry ?? "fs_main";
-      shaders.set(h.id, { vertexModule, fragmentModule, vertexEntry, fragmentEntry });
+      const vertexSource = combinedSource ?? desc.vertexSource!;
+      const fragmentSource = combinedSource ?? desc.fragmentSource ?? vertexSource;
+      shaders.set(h.id, { vertexModule, fragmentModule, vertexEntry, fragmentEntry, vertexSource, fragmentSource });
       return h;
     },
 
@@ -260,11 +268,73 @@ export function createGfx(
           depthWriteEnabled: desc.depth.depthWrite ?? true,
           depthCompare: (desc.depth.depthCompare ?? CompareFunc.LESS) as GPUCompareFunction,
         } : undefined,
+        multisample: { count: desc.multisample?.count ?? 1 },
         label: desc.label,
       });
 
       pipelines.set(h.id, { gpu: gpuPipeline, desc, indexType: desc.indexType ?? IndexType.NONE });
       return h;
+    },
+
+    async recompileShader(
+      shd: SgShader,
+      sources: { vertexSource?: string; fragmentSource?: string },
+      callback?: (result: ShaderRecompileResult) => void,
+    ): Promise<ShaderRecompileResult> {
+      const slot = shaders.get(shd.id);
+      if (!slot) {
+        const result: ShaderRecompileResult = { ok: false, vertexError: "Invalid shader handle" };
+        callback?.(result);
+        return result;
+      }
+
+      const nextVertex = sources.vertexSource ?? slot.vertexSource;
+      const nextFragment = sources.fragmentSource ?? slot.fragmentSource;
+
+      // Diff-based early exit — no work if source is unchanged
+      if (nextVertex === slot.vertexSource && nextFragment === slot.fragmentSource) {
+        const result: ShaderRecompileResult = { ok: true, shader: shd };
+        callback?.(result);
+        return result;
+      }
+
+      // Compile new modules — createShaderModule never throws; errors surface via getCompilationInfo()
+      const newVert = device.createShaderModule({ code: nextVertex, label: `${shd.id}_vs_hot` });
+      const newFrag = device.createShaderModule({ code: nextFragment, label: `${shd.id}_fs_hot` });
+
+      const [vertInfo, fragInfo] = await Promise.all([
+        newVert.getCompilationInfo(),
+        newFrag.getCompilationInfo(),
+      ]);
+
+      const vertErrors = vertInfo.messages
+        .filter(m => m.type === "error")
+        .map(m => m.message)
+        .join("\n");
+      const fragErrors = fragInfo.messages
+        .filter(m => m.type === "error")
+        .map(m => m.message)
+        .join("\n");
+
+      if (vertErrors || fragErrors) {
+        const result: ShaderRecompileResult = {
+          ok: false,
+          vertexError: vertErrors || undefined,
+          fragmentError: fragErrors || undefined,
+        };
+        callback?.(result);
+        return result;
+      }
+
+      // Atomically commit new modules and updated source to the slot
+      slot.vertexModule = newVert;
+      slot.fragmentModule = newFrag;
+      slot.vertexSource = nextVertex;
+      slot.fragmentSource = nextFragment;
+
+      const result: ShaderRecompileResult = { ok: true, shader: shd };
+      callback?.(result);
+      return result;
     },
 
     destroyBuffer(buf: SgBuffer) {
@@ -286,7 +356,20 @@ export function createGfx(
     },
 
     beginPass(desc?: PassDesc) {
-      encoder = device.createCommandEncoder();
+      // Create the encoder once per frame; reuse across multiple passes.
+      if (!encoder) {
+        encoder = device.createCommandEncoder();
+      }
+
+      function resolveLoadOp(action: LoadAction | undefined): GPULoadOp {
+        return action === LoadAction.LOAD || action === LoadAction.DONTCARE
+          ? "load"
+          : "clear";
+      }
+
+      function resolveStoreOp(sa: StoreAction | undefined): GPUStoreOp {
+        return sa === StoreAction.DISCARD ? "discard" : "store";
+      }
 
       const colorAttachments: GPURenderPassColorAttachment[] = [];
 
@@ -295,27 +378,55 @@ export function createGfx(
           const img = images.get(desc.offscreen.colorImages[i].id);
           if (!img) throw new Error("Invalid offscreen color image");
           const ca = desc.colorAttachments?.[i];
+          const loadOp = resolveLoadOp(ca?.action);
+          const resolveSlot = ca?.resolveImage ? images.get(ca.resolveImage.id) : undefined;
           colorAttachments.push({
             view: img.view,
-            loadOp: ca?.action === LoadAction.LOAD ? "load" : "clear",
-            storeOp: "store",
-            clearValue: ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 },
+            resolveTarget: resolveSlot?.view,
+            loadOp,
+            storeOp: resolveStoreOp(ca?.storeAction),
+            clearValue: loadOp === "clear"
+              ? (ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 })
+              : undefined,
           });
         }
       } else {
         const ca = desc?.colorAttachments?.[0];
         const textureView = context.getCurrentTexture().createView();
+        const loadOp = resolveLoadOp(ca?.action);
+        const resolveSlot = ca?.resolveImage ? images.get(ca.resolveImage.id) : undefined;
         colorAttachments.push({
           view: textureView,
-          loadOp: ca?.action === LoadAction.LOAD ? "load" : "clear",
-          storeOp: "store",
-          clearValue: ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 },
+          resolveTarget: resolveSlot?.view,
+          loadOp,
+          storeOp: resolveStoreOp(ca?.storeAction),
+          clearValue: loadOp === "clear"
+            ? (ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 })
+            : undefined,
         });
       }
 
-      const passDesc: GPURenderPassDescriptor = { colorAttachments };
+      // Resolve depth/stencil attachment
+      let depthView: GPUTextureView | undefined;
+      if (desc?.offscreen?.depthImage) {
+        const di = images.get(desc.offscreen.depthImage.id);
+        if (!di) throw new Error("Invalid offscreen depth image");
+        depthView = di.view;
+      }
 
-      passEncoder = encoder.beginRenderPass(passDesc);
+      const passDescGpu: GPURenderPassDescriptor = {
+        colorAttachments,
+        depthStencilAttachment: depthView ? {
+          view: depthView,
+          depthLoadOp: resolveLoadOp(desc?.depthAttachment?.action),
+          depthStoreOp: resolveStoreOp(desc?.depthAttachment?.storeAction),
+          depthClearValue: desc?.depthAttachment?.value ?? 1.0,
+          stencilLoadOp: "clear",
+          stencilStoreOp: "store",
+        } : undefined,
+      };
+
+      passEncoder = encoder.beginRenderPass(passDescGpu);
       uniformOffset = 0;
       boundVertexBuffers = [];
       boundIndexBuffer = null;
@@ -444,6 +555,7 @@ export function createGfx(
       }
       currentPipeline = null;
       uniformBindGroup = null;
+      uniformOffset = 0;
 
       const now = performance.now();
       frameTime = (now - lastFrameTime) / 1000;

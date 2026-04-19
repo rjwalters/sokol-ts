@@ -12,29 +12,32 @@ export async function run(desc: AppDesc): Promise<() => void> {
     throw new Error("WebGPU is not supported in this browser");
   }
 
-  const adapterOptions: GPURequestAdapterOptions = {};
-  if (desc.powerPreference !== undefined) {
-    adapterOptions.powerPreference = desc.powerPreference;
-  }
-  const adapter = await navigator.gpu.requestAdapter(adapterOptions);
-  if (!adapter) throw new Error("Failed to get GPU adapter");
+  const callerDevice = desc.device;
+  const device = callerDevice ?? await (async () => {
+    const adapterOptions: GPURequestAdapterOptions = {};
+    if (desc.powerPreference !== undefined) {
+      adapterOptions.powerPreference = desc.powerPreference;
+    }
+    const adapter = await navigator.gpu.requestAdapter(adapterOptions);
+    if (!adapter) throw new Error("Failed to get GPU adapter");
 
-  const reqFeatures: GPUFeatureName[] = desc.requiredFeatures ?? [];
-  const unsupported = reqFeatures.filter(f => !adapter.features.has(f));
-  if (unsupported.length > 0) {
-    throw new Error(`GPU adapter does not support required features: ${unsupported.join(", ")}`);
-  }
+    const reqFeatures: GPUFeatureName[] = desc.requiredFeatures ?? [];
+    const unsupported = reqFeatures.filter(f => !adapter.features.has(f));
+    if (unsupported.length > 0) {
+      throw new Error(`GPU adapter does not support required features: ${unsupported.join(", ")}`);
+    }
 
-  const device = await adapter.requestDevice({
-    requiredFeatures: reqFeatures,
-    requiredLimits: desc.requiredLimits,
-  });
+    return adapter.requestDevice({
+      requiredFeatures: reqFeatures,
+      requiredLimits: desc.requiredLimits,
+    });
+  })();
   const context = canvas.getContext("webgpu")!;
   const format = navigator.gpu.getPreferredCanvasFormat();
 
   context.configure({ device, format, alphaMode: "premultiplied" });
 
-  const pixelRatio = desc.pixelRatio ?? window.devicePixelRatio;
+  let pixelRatio = desc.pixelRatio ?? window.devicePixelRatio;
 
   function resize() {
     const w = Math.floor(canvas.clientWidth * pixelRatio);
@@ -43,6 +46,29 @@ export async function run(desc: AppDesc): Promise<() => void> {
       canvas.width = w;
       canvas.height = h;
     }
+  }
+
+  // DPI change detection via matchMedia — re-registers on each change so we
+  // always track the current ratio, regardless of how many monitors differ.
+  let dpiMediaQuery: MediaQueryList | null = null;
+
+  function onDpiChange() {
+    if (desc.pixelRatio !== undefined) return; // honour fixed override
+    pixelRatio = window.devicePixelRatio;
+    resize();
+    dispatch({
+      type: AppEventType.RESIZE,
+      width: desc.dpiIndependentCoords ? canvas.clientWidth : canvas.width,
+      height: desc.dpiIndependentCoords ? canvas.clientHeight : canvas.height,
+    });
+    // Re-register for the next ratio change
+    dpiMediaQuery = window.matchMedia(`(resolution: ${pixelRatio}dppx)`);
+    dpiMediaQuery.addEventListener("change", onDpiChange, { once: true });
+  }
+
+  if (desc.pixelRatio === undefined) {
+    dpiMediaQuery = window.matchMedia(`(resolution: ${pixelRatio}dppx)`);
+    dpiMediaQuery.addEventListener("change", onDpiChange, { once: true });
   }
 
   resize();
@@ -66,6 +92,22 @@ export async function run(desc: AppDesc): Promise<() => void> {
     desc.event?.(ev, gfx);
   }
 
+  // coordScale: multiplier applied to mouse/touch coordinates.
+  // When dpiIndependentCoords is true, coords are kept in CSS pixels (scale=1).
+  // Otherwise coords are in physical pixels (scale=pixelRatio).
+  const coordScale = () => desc.dpiIndependentCoords ? 1 : pixelRatio;
+
+  // Convert a Touch to canvas-relative coordinates, correcting for canvas offset
+  // in the viewport and scaling to the chosen coordinate space.
+  function toCanvasTouch(t: Touch): { id: number; x: number; y: number } {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      id: t.identifier,
+      x: (t.clientX - rect.left) * coordScale(),
+      y: (t.clientY - rect.top)  * coordScale(),
+    };
+  }
+
   const eventMap: [EventTarget, string, (e: Event) => void][] = [];
 
   function listen<K extends keyof HTMLElementEventMap>(
@@ -78,46 +120,74 @@ export async function run(desc: AppDesc): Promise<() => void> {
     eventMap.push([target, type, h]);
   }
 
-  listen(canvas, "mousedown", (e) => dispatch({ type: AppEventType.MOUSE_DOWN, mouseX: e.offsetX * pixelRatio, mouseY: e.offsetY * pixelRatio, mouseButton: e.button }));
-  listen(canvas, "mouseup", (e) => dispatch({ type: AppEventType.MOUSE_UP, mouseX: e.offsetX * pixelRatio, mouseY: e.offsetY * pixelRatio, mouseButton: e.button }));
-  listen(canvas, "mousemove", (e) => dispatch({ type: AppEventType.MOUSE_MOVE, mouseX: e.offsetX * pixelRatio, mouseY: e.offsetY * pixelRatio, deltaX: e.movementX, deltaY: e.movementY }));
+  listen(canvas, "mousedown", (e) => dispatch({ type: AppEventType.MOUSE_DOWN, mouseX: e.offsetX * coordScale(), mouseY: e.offsetY * coordScale(), mouseButton: e.button }));
+  listen(canvas, "mouseup", (e) => dispatch({ type: AppEventType.MOUSE_UP, mouseX: e.offsetX * coordScale(), mouseY: e.offsetY * coordScale(), mouseButton: e.button }));
+  listen(canvas, "mousemove", (e) => dispatch({ type: AppEventType.MOUSE_MOVE, mouseX: e.offsetX * coordScale(), mouseY: e.offsetY * coordScale(), deltaX: e.movementX, deltaY: e.movementY }));
   listen(canvas, "wheel", (e) => { e.preventDefault(); dispatch({ type: AppEventType.MOUSE_WHEEL, deltaX: (e as WheelEvent).deltaX, deltaY: (e as WheelEvent).deltaY }); }, );
   listen(window, "keydown", (e) => dispatch({ type: AppEventType.KEY_DOWN, key: (e as KeyboardEvent).key, code: (e as KeyboardEvent).code }));
   listen(window, "keyup", (e) => dispatch({ type: AppEventType.KEY_UP, key: (e as KeyboardEvent).key, code: (e as KeyboardEvent).code }));
 
   listen(canvas, "touchstart", (e) => {
     e.preventDefault();
-    dispatch({ type: AppEventType.TOUCH_START, touches: Array.from((e as TouchEvent).touches).map(t => ({ id: t.identifier, x: t.clientX * pixelRatio, y: t.clientY * pixelRatio })) });
+    dispatch({ type: AppEventType.TOUCH_START, touches: Array.from((e as TouchEvent).touches).map(toCanvasTouch) });
   });
   listen(canvas, "touchmove", (e) => {
     e.preventDefault();
-    dispatch({ type: AppEventType.TOUCH_MOVE, touches: Array.from((e as TouchEvent).touches).map(t => ({ id: t.identifier, x: t.clientX * pixelRatio, y: t.clientY * pixelRatio })) });
+    dispatch({ type: AppEventType.TOUCH_MOVE, touches: Array.from((e as TouchEvent).touches).map(toCanvasTouch) });
   });
   listen(canvas, "touchend", (e) => {
-    dispatch({ type: AppEventType.TOUCH_END, touches: Array.from((e as TouchEvent).changedTouches).map(t => ({ id: t.identifier, x: t.clientX * pixelRatio, y: t.clientY * pixelRatio })) });
+    dispatch({ type: AppEventType.TOUCH_END, touches: Array.from((e as TouchEvent).changedTouches).map(toCanvasTouch) });
   });
 
   const resizeObserver = new ResizeObserver(() => {
     resize();
-    dispatch({ type: AppEventType.RESIZE, width: canvas.width, height: canvas.height });
+    dispatch({
+      type: AppEventType.RESIZE,
+      width: desc.dpiIndependentCoords ? canvas.clientWidth : canvas.width,
+      height: desc.dpiIndependentCoords ? canvas.clientHeight : canvas.height,
+    });
   });
   resizeObserver.observe(canvas);
 
   // Frame loop
-  function frame() {
-    if (!running) return;
+  let paused = false;
+
+  const onVisibilityChange = () => {
+    paused = document.hidden;
+    if (!paused && running) requestAnimationFrame(frame);
+  };
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  eventMap.push([document, "visibilitychange", onVisibilityChange]);
+
+  const targetInterval = desc.targetFps ? 1000 / desc.targetFps : 0;
+  let lastFrameMs = 0;
+
+  function frame(timestampMs: number) {
+    if (!running || paused) return;
+    if (targetInterval > 0 && timestampMs - lastFrameMs < targetInterval) {
+      requestAnimationFrame(frame);
+      return;
+    }
+    lastFrameMs = timestampMs;
     resize();
+    desc.preFrame?.(gfx);
     try {
       desc.frame(gfx);
     } catch (err) {
-      running = false;
+      desc.postFrame?.(gfx);
       if (desc.onError) {
-        desc.onError(err);
+        if (desc.onError(err) === false) {
+          running = false;
+        } else {
+          requestAnimationFrame(frame);
+        }
       } else {
-        throw err;
+        console.error("[sokol-ts] frame error:", err);
+        running = false;
       }
       return;
     }
+    desc.postFrame?.(gfx);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
@@ -126,11 +196,15 @@ export async function run(desc: AppDesc): Promise<() => void> {
   return () => {
     running = false;
     resizeObserver.disconnect();
+    if (dpiMediaQuery) {
+      dpiMediaQuery.removeEventListener("change", onDpiChange);
+      dpiMediaQuery = null;
+    }
     for (const [target, type, handler] of eventMap) {
       target.removeEventListener(type, handler);
     }
     desc.cleanup?.(gfx);
     context.unconfigure();
-    device.destroy();
+    if (!callerDevice) device.destroy();
   };
 }
