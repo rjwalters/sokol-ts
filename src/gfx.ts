@@ -1,15 +1,10 @@
 import {
   type SgBuffer, type SgImage, type SgSampler, type SgShader, type SgPipeline,
   type BufferDesc, type ImageDesc, type SamplerDesc, type ShaderDesc, type PipelineDesc,
-  type Bindings, type PassDesc, type Gfx,
-  BufferUsage, IndexType, LoadAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
+  type Bindings, type PassDesc, type Gfx, type DrawStats, type ShaderRecompileResult,
+  BufferUsage, IndexType, LoadAction, StoreAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
   FilterMode, WrapMode,
 } from "./types.js";
-
-let nextId = 1;
-function handle<T extends { readonly _brand: string; readonly id: number }>(brand: string): T {
-  return { _brand: brand, id: nextId++ } as unknown as T;
-}
 
 interface BufferSlot {
   gpu: GPUBuffer;
@@ -29,6 +24,8 @@ interface SamplerSlot {
 interface ShaderSlot {
   vertexModule: GPUShaderModule;
   fragmentModule: GPUShaderModule;
+  vertexEntry: string;
+  fragmentEntry: string;
   vertexSource: string;
   fragmentSource: string;
 }
@@ -45,6 +42,11 @@ export function createGfx(
   context: GPUCanvasContext,
   format: GPUTextureFormat,
 ): Gfx {
+  let nextId = 1;
+  function handle<T extends { readonly _brand: string; readonly id: number }>(brand: string): T {
+    return { _brand: brand, id: nextId++ } as unknown as T;
+  }
+
   const buffers = new Map<number, BufferSlot>();
   const images = new Map<number, ImageSlot>();
   const samplers = new Map<number, SamplerSlot>();
@@ -61,8 +63,16 @@ export function createGfx(
   let uniformOffset = 0;
   let uniformBuffer: GPUBuffer | null = null;
   let uniformBindGroup: GPUBindGroup | null = null;
+  let boundVertexBuffers: BufferSlot[] = [];
+  let boundIndexBuffer: BufferSlot | null = null;
+  let _frameStats: DrawStats = { drawCalls: 0, totalElements: 0, indirectDrawCalls: 0 };
 
   const UNIFORM_BUFFER_SIZE = 65536; // 64KB uniform staging
+  if (UNIFORM_BUFFER_SIZE > device.limits.maxUniformBufferBindingSize) {
+    throw new Error(
+      `UNIFORM_BUFFER_SIZE (${UNIFORM_BUFFER_SIZE}) exceeds device limit maxUniformBufferBindingSize (${device.limits.maxUniformBufferBindingSize})`
+    );
+  }
 
   function ensureUniformBuffer() {
     if (!uniformBuffer) {
@@ -77,7 +87,10 @@ export function createGfx(
   function gpuBufferUsage(usage: BufferUsage | undefined): number {
     const base = GPUBufferUsage.COPY_DST;
     switch (usage) {
-      default: return base | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
+      case BufferUsage.INDIRECT:
+        return base | GPUBufferUsage.INDIRECT;
+      default:
+        return base | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
     }
   }
 
@@ -86,8 +99,12 @@ export function createGfx(
     get device() { return device; },
     get width() { return canvas.width; },
     get height() { return canvas.height; },
+    get cssWidth() { return canvas.clientWidth; },
+    get cssHeight() { return canvas.clientHeight; },
+    get dpiScale() { return canvas.width / (canvas.clientWidth || 1); },
     get dt() { return frameTime; },
     get frameCount() { return _frameCount; },
+    get frameStats(): DrawStats { return { ..._frameStats }; },
 
     makeBuffer(desc: BufferDesc): SgBuffer {
       const h = handle<SgBuffer>("SgBuffer");
@@ -117,6 +134,7 @@ export function createGfx(
         size: { width: desc.width, height: desc.height },
         format: fmt,
         usage,
+        sampleCount: desc.sampleCount ?? 1,
         label: desc.label,
       });
       if (desc.data) {
@@ -158,11 +176,40 @@ export function createGfx(
       return h;
     },
 
-    makeShader(desc: ShaderDesc): SgShader {
+    async makeShader(desc: ShaderDesc): Promise<SgShader> {
       const h = handle<SgShader>("SgShader");
-      const vertexModule = device.createShaderModule({ code: desc.vertexSource, label: desc.label ? `${desc.label}_vs` : undefined });
-      const fragmentModule = device.createShaderModule({ code: desc.fragmentSource, label: desc.label ? `${desc.label}_fs` : undefined });
-      shaders.set(h.id, { vertexModule, fragmentModule, vertexSource: desc.vertexSource, fragmentSource: desc.fragmentSource });
+      const combinedSource = desc.source;
+      const vertexModule = device.createShaderModule({
+        code: combinedSource ?? desc.vertexSource!,
+        label: desc.label ? `${desc.label}_vs` : undefined,
+      });
+      const fragmentModule = combinedSource
+        ? vertexModule
+        : device.createShaderModule({
+            code: desc.fragmentSource!,
+            label: desc.label ? `${desc.label}_fs` : undefined,
+          });
+
+      async function checkCompilation(mod: GPUShaderModule, stage: string) {
+        const info = await mod.getCompilationInfo();
+        for (const msg of info.messages) {
+          const loc = `${msg.lineNum}:${msg.linePos}`;
+          if (msg.type === "error") throw new Error(`[${stage} shader] ${loc}: ${msg.message}`);
+          if (msg.type === "warning") console.warn(`[${stage} shader] ${loc}: ${msg.message}`);
+        }
+      }
+
+      await Promise.all([
+        checkCompilation(vertexModule, "vertex"),
+        // Only check fragment separately when it's a different module
+        ...(fragmentModule !== vertexModule ? [checkCompilation(fragmentModule, "fragment")] : []),
+      ]);
+
+      const vertexEntry = desc.vertexEntry ?? "vs_main";
+      const fragmentEntry = desc.fragmentEntry ?? "fs_main";
+      const vertexSource = combinedSource ?? desc.vertexSource!;
+      const fragmentSource = combinedSource ?? desc.fragmentSource ?? vertexSource;
+      shaders.set(h.id, { vertexModule, fragmentModule, vertexEntry, fragmentEntry, vertexSource, fragmentSource });
       return h;
     },
 
@@ -234,12 +281,12 @@ export function createGfx(
         layout: pipelineLayout,
         vertex: {
           module: shd.vertexModule,
-          entryPoint: "vs_main",
+          entryPoint: shd.vertexEntry,
           buffers: vertexBuffers,
         },
         fragment: {
           module: shd.fragmentModule,
-          entryPoint: "fs_main",
+          entryPoint: shd.fragmentEntry,
           targets: colorTargets,
         },
         primitive: {
@@ -254,11 +301,73 @@ export function createGfx(
           depthWriteEnabled: desc.depth.depthWrite ?? true,
           depthCompare: (desc.depth.depthCompare ?? CompareFunc.LESS) as GPUCompareFunction,
         } : undefined,
+        multisample: { count: desc.multisample?.count ?? 1 },
         label: desc.label,
       });
 
       pipelines.set(h.id, { gpu: gpuPipeline, desc, indexType: desc.indexType ?? IndexType.NONE });
       return h;
+    },
+
+    async recompileShader(
+      shd: SgShader,
+      sources: { vertexSource?: string; fragmentSource?: string },
+      callback?: (result: ShaderRecompileResult) => void,
+    ): Promise<ShaderRecompileResult> {
+      const slot = shaders.get(shd.id);
+      if (!slot) {
+        const result: ShaderRecompileResult = { ok: false, vertexError: "Invalid shader handle" };
+        callback?.(result);
+        return result;
+      }
+
+      const nextVertex = sources.vertexSource ?? slot.vertexSource;
+      const nextFragment = sources.fragmentSource ?? slot.fragmentSource;
+
+      // Diff-based early exit — no work if source is unchanged
+      if (nextVertex === slot.vertexSource && nextFragment === slot.fragmentSource) {
+        const result: ShaderRecompileResult = { ok: true, shader: shd };
+        callback?.(result);
+        return result;
+      }
+
+      // Compile new modules — createShaderModule never throws; errors surface via getCompilationInfo()
+      const newVert = device.createShaderModule({ code: nextVertex, label: `${shd.id}_vs_hot` });
+      const newFrag = device.createShaderModule({ code: nextFragment, label: `${shd.id}_fs_hot` });
+
+      const [vertInfo, fragInfo] = await Promise.all([
+        newVert.getCompilationInfo(),
+        newFrag.getCompilationInfo(),
+      ]);
+
+      const vertErrors = vertInfo.messages
+        .filter(m => m.type === "error")
+        .map(m => m.message)
+        .join("\n");
+      const fragErrors = fragInfo.messages
+        .filter(m => m.type === "error")
+        .map(m => m.message)
+        .join("\n");
+
+      if (vertErrors || fragErrors) {
+        const result: ShaderRecompileResult = {
+          ok: false,
+          vertexError: vertErrors || undefined,
+          fragmentError: fragErrors || undefined,
+        };
+        callback?.(result);
+        return result;
+      }
+
+      // Atomically commit new modules and updated source to the slot
+      slot.vertexModule = newVert;
+      slot.fragmentModule = newFrag;
+      slot.vertexSource = nextVertex;
+      slot.fragmentSource = nextFragment;
+
+      const result: ShaderRecompileResult = { ok: true, shader: shd };
+      callback?.(result);
+      return result;
     },
 
     destroyBuffer(buf: SgBuffer) {
@@ -280,7 +389,20 @@ export function createGfx(
     },
 
     beginPass(desc?: PassDesc) {
-      encoder = device.createCommandEncoder();
+      // Create the encoder once per frame; reuse across multiple passes.
+      if (!encoder) {
+        encoder = device.createCommandEncoder();
+      }
+
+      function resolveLoadOp(action: LoadAction | undefined): GPULoadOp {
+        return action === LoadAction.LOAD || action === LoadAction.DONTCARE
+          ? "load"
+          : "clear";
+      }
+
+      function resolveStoreOp(sa: StoreAction | undefined): GPUStoreOp {
+        return sa === StoreAction.DISCARD ? "discard" : "store";
+      }
 
       const colorAttachments: GPURenderPassColorAttachment[] = [];
 
@@ -289,28 +411,59 @@ export function createGfx(
           const img = images.get(desc.offscreen.colorImages[i].id);
           if (!img) throw new Error("Invalid offscreen color image");
           const ca = desc.colorAttachments?.[i];
+          const loadOp = resolveLoadOp(ca?.action);
+          const resolveSlot = ca?.resolveImage ? images.get(ca.resolveImage.id) : undefined;
           colorAttachments.push({
             view: img.view,
-            loadOp: ca?.action === LoadAction.LOAD ? "load" : "clear",
-            storeOp: "store",
-            clearValue: ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 },
+            resolveTarget: resolveSlot?.view,
+            loadOp,
+            storeOp: resolveStoreOp(ca?.storeAction),
+            clearValue: loadOp === "clear"
+              ? (ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 })
+              : undefined,
           });
         }
       } else {
         const ca = desc?.colorAttachments?.[0];
         const textureView = context.getCurrentTexture().createView();
+        const loadOp = resolveLoadOp(ca?.action);
+        const resolveSlot = ca?.resolveImage ? images.get(ca.resolveImage.id) : undefined;
         colorAttachments.push({
           view: textureView,
-          loadOp: ca?.action === LoadAction.LOAD ? "load" : "clear",
-          storeOp: "store",
-          clearValue: ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 },
+          resolveTarget: resolveSlot?.view,
+          loadOp,
+          storeOp: resolveStoreOp(ca?.storeAction),
+          clearValue: loadOp === "clear"
+            ? (ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 })
+            : undefined,
         });
       }
 
-      const passDesc: GPURenderPassDescriptor = { colorAttachments };
+      // Resolve depth/stencil attachment
+      let depthView: GPUTextureView | undefined;
+      if (desc?.offscreen?.depthImage) {
+        const di = images.get(desc.offscreen.depthImage.id);
+        if (!di) throw new Error("Invalid offscreen depth image");
+        depthView = di.view;
+      }
 
-      passEncoder = encoder.beginRenderPass(passDesc);
+      const passDescGpu: GPURenderPassDescriptor = {
+        colorAttachments,
+        depthStencilAttachment: depthView ? {
+          view: depthView,
+          depthLoadOp: resolveLoadOp(desc?.depthAttachment?.action),
+          depthStoreOp: resolveStoreOp(desc?.depthAttachment?.storeAction),
+          depthClearValue: desc?.depthAttachment?.value ?? 1.0,
+          stencilLoadOp: "clear",
+          stencilStoreOp: "store",
+        } : undefined,
+      };
+
+      passEncoder = encoder.beginRenderPass(passDescGpu);
       uniformOffset = 0;
+      boundVertexBuffers = [];
+      boundIndexBuffer = null;
+      _frameStats = { drawCalls: 0, totalElements: 0, indirectDrawCalls: 0 };
     },
 
     applyPipeline(pip: SgPipeline) {
@@ -322,12 +475,14 @@ export function createGfx(
 
     applyBindings(bind: Bindings) {
       if (!passEncoder) throw new Error("No active pass");
+      boundVertexBuffers = [];
 
       // Vertex buffers
       for (let i = 0; i < bind.vertexBuffers.length; i++) {
         const buf = buffers.get(bind.vertexBuffers[i].id);
         if (!buf) throw new Error(`Invalid vertex buffer at index ${i}`);
         passEncoder.setVertexBuffer(i, buf.gpu);
+        boundVertexBuffers.push(buf);
       }
 
       // Index buffer
@@ -336,6 +491,9 @@ export function createGfx(
         if (!buf) throw new Error("Invalid index buffer");
         const fmt = currentPipeline?.indexType === IndexType.UINT32 ? "uint32" : "uint16";
         passEncoder.setIndexBuffer(buf.gpu, fmt);
+        boundIndexBuffer = buf;
+      } else {
+        boundIndexBuffer = null;
       }
 
       // Textures + samplers — bind group 1
@@ -380,13 +538,68 @@ export function createGfx(
       uniformOffset = alignedOffset + Math.max(data.byteLength, 256);
     },
 
-    draw(baseElement: number, numElements: number, numInstances = 1) {
-      if (!passEncoder) throw new Error("No active pass");
-      if (currentPipeline?.indexType !== IndexType.NONE) {
-        passEncoder.drawIndexed(numElements, numInstances, baseElement);
-      } else {
-        passEncoder.draw(numElements, numInstances, baseElement);
+    draw(baseElement: number, numElements?: number, numInstances = 1) {
+      if (!passEncoder || !currentPipeline) throw new Error("No active pass or pipeline");
+
+      const isIndexed = currentPipeline.indexType !== IndexType.NONE;
+      let count = numElements;
+
+      // Auto-derive count from bound buffer size when omitted or zero
+      if (count === undefined || count === 0) {
+        if (isIndexed && boundIndexBuffer) {
+          const bytesPerIndex = currentPipeline.indexType === IndexType.UINT32 ? 4 : 2;
+          const bufSize = boundIndexBuffer.desc.size ?? boundIndexBuffer.desc.data?.byteLength ?? 0;
+          count = bufSize / bytesPerIndex - baseElement;
+        } else if (boundVertexBuffers.length > 0) {
+          const stride = currentPipeline.desc.layout.buffers[0]?.stride ?? 0;
+          if (stride > 0) {
+            const bufSize = boundVertexBuffers[0].desc.size ?? boundVertexBuffers[0].desc.data?.byteLength ?? 0;
+            count = bufSize / stride - baseElement;
+          } else {
+            count = 0;
+          }
+        } else {
+          count = 0;
+        }
       }
+
+      // Validate element count vs buffer capacity
+      if (isIndexed && boundIndexBuffer) {
+        const bytesPerIndex = currentPipeline.indexType === IndexType.UINT32 ? 4 : 2;
+        const indexCapacity = (boundIndexBuffer.desc.size ?? boundIndexBuffer.desc.data?.byteLength ?? 0) / bytesPerIndex;
+        if (baseElement + count > indexCapacity) {
+          throw new Error(`draw: index range [${baseElement}, ${baseElement + count}) exceeds index buffer capacity ${indexCapacity}`);
+        }
+      } else if (!isIndexed && boundVertexBuffers.length > 0) {
+        const stride = currentPipeline.desc.layout.buffers[0]?.stride ?? 0;
+        if (stride > 0) {
+          const vertexCapacity = (boundVertexBuffers[0].desc.size ?? boundVertexBuffers[0].desc.data?.byteLength ?? 0) / stride;
+          if (baseElement + count > vertexCapacity) {
+            throw new Error(`draw: vertex range [${baseElement}, ${baseElement + count}) exceeds vertex buffer capacity ${vertexCapacity}`);
+          }
+        }
+      }
+
+      if (isIndexed) {
+        passEncoder.drawIndexed(count, numInstances, baseElement);
+      } else {
+        passEncoder.draw(count, numInstances, baseElement);
+      }
+
+      _frameStats.drawCalls++;
+      _frameStats.totalElements += count * numInstances;
+    },
+
+    drawIndirect(indirectBuffer: SgBuffer, indirectOffset = 0) {
+      if (!passEncoder) throw new Error("No active pass");
+      const buf = buffers.get(indirectBuffer.id);
+      if (!buf) throw new Error("Invalid indirect buffer");
+      if (currentPipeline?.indexType !== IndexType.NONE) {
+        passEncoder.drawIndexedIndirect(buf.gpu, indirectOffset);
+      } else {
+        passEncoder.drawIndirect(buf.gpu, indirectOffset);
+      }
+      _frameStats.indirectDrawCalls++;
     },
 
     endPass() {
@@ -403,6 +616,7 @@ export function createGfx(
       }
       currentPipeline = null;
       uniformBindGroup = null;
+      uniformOffset = 0;
 
       const now = performance.now();
       frameTime = (now - lastFrameTime) / 1000;

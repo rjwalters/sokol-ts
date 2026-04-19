@@ -75,10 +75,16 @@ export enum LoadAction {
   DONTCARE = 2,
 }
 
+export enum StoreAction {
+  STORE   = 0,
+  DISCARD = 1,
+}
+
 export enum BufferUsage {
   IMMUTABLE = 0,
-  DYNAMIC = 1,
-  STREAM = 2,
+  DYNAMIC   = 1,
+  STREAM    = 2,
+  INDIRECT  = 3,
 }
 
 // Desc structs — all fields optional, defaults applied at creation
@@ -96,6 +102,7 @@ export interface ImageDesc {
   format?: PixelFormat;
   data?: ArrayBufferView;
   renderTarget?: boolean;
+  sampleCount?: 1 | 4;
   label?: string;
 }
 
@@ -130,8 +137,11 @@ export interface VertexBufferLayoutDesc {
 }
 
 export interface ShaderDesc {
-  vertexSource: string;
-  fragmentSource: string;
+  source?: string;           // combined VS+FS in one module (used for both stages)
+  vertexSource?: string;     // used when source is absent
+  fragmentSource?: string;   // used when source is absent
+  vertexEntry?: string;      // default: "vs_main"
+  fragmentEntry?: string;    // default: "fs_main"
   label?: string;
 }
 
@@ -161,6 +171,7 @@ export interface PipelineDesc {
   images?: number;
   /** Number of sampler bindings in bind group 1 (locations images..images+samplerCount-1). Default 0. */
   samplerCount?: number;
+  multisample?: { count?: 1 | 4 };
   label?: string;
 }
 
@@ -173,13 +184,16 @@ export interface Bindings {
 
 export interface ColorAttachment {
   action?: LoadAction;
+  storeAction?: StoreAction;
   color?: [number, number, number, number];
+  resolveImage?: SgImage;
 }
 
 export interface PassDesc {
   colorAttachments?: ColorAttachment[];
   depthAttachment?: {
     action?: LoadAction;
+    storeAction?: StoreAction;
     value?: number;
   };
   // If omitted, renders to the swapchain
@@ -191,19 +205,38 @@ export interface PassDesc {
 
 export interface AppDesc {
   canvas: HTMLCanvasElement | string;
+  device?: GPUDevice;
   init: (gfx: Gfx) => void | Promise<void>;
   frame: (gfx: Gfx) => void;
   cleanup?: (gfx: Gfx) => void;
   event?: (ev: AppEvent, gfx: Gfx) => void;
+  deviceLost?: (reason: GPUDeviceLostReason, message: string) => void;
   pixelRatio?: number;
+  powerPreference?: "low-power" | "high-performance";
+  requiredFeatures?: GPUFeatureName[];
+  requiredLimits?: Record<string, number>;
+  dpiIndependentCoords?: boolean; // default false; when true all event coords are in CSS pixels
+  onError?: (err: unknown) => boolean | void;
+  preFrame?: (gfx: Gfx) => void;
+  postFrame?: (gfx: Gfx) => void;
+  targetFps?: number;
 }
+
+export type ShaderRecompileResult =
+  | { ok: true; shader: SgShader }
+  | { ok: false; vertexError?: string; fragmentError?: string };
 
 export interface Gfx {
   makeBuffer(desc: BufferDesc): SgBuffer;
   makeImage(desc: ImageDesc): SgImage;
   makeSampler(desc: SamplerDesc): SgSampler;
-  makeShader(desc: ShaderDesc): SgShader;
+  makeShader(desc: ShaderDesc): Promise<SgShader>;
   makePipeline(desc: PipelineDesc): SgPipeline;
+  recompileShader(
+    shd: SgShader,
+    sources: { vertexSource?: string; fragmentSource?: string },
+    callback?: (result: ShaderRecompileResult) => void,
+  ): Promise<ShaderRecompileResult>;
 
   destroyBuffer(buf: SgBuffer): void;
   destroyImage(img: SgImage): void;
@@ -217,7 +250,8 @@ export interface Gfx {
   applyPipeline(pip: SgPipeline): void;
   applyBindings(bind: Bindings): void;
   applyUniforms(data: ArrayBufferView): void;
-  draw(baseElement: number, numElements: number, numInstances?: number): void;
+  draw(baseElement: number, numElements?: number, numInstances?: number): void;
+  drawIndirect(indirectBuffer: SgBuffer, indirectOffset?: number): void;
   endPass(): void;
   commit(): void;
 
@@ -225,8 +259,48 @@ export interface Gfx {
   readonly device: GPUDevice;
   readonly width: number;
   readonly height: number;
+  readonly cssWidth: number;   // canvas.clientWidth  (CSS pixels)
+  readonly cssHeight: number;  // canvas.clientHeight (CSS pixels)
+  readonly dpiScale: number;   // current effective pixelRatio
   readonly dt: number;
   readonly frameCount: number;
+  readonly frameStats: DrawStats;
+}
+
+export interface DrawStats {
+  drawCalls: number;
+  totalElements: number;
+  indirectDrawCalls: number;
+}
+
+// Audio types
+
+export type AudioCallback = (
+  buffer: Float32Array,
+  numFrames: number,
+  numChannels: number,
+) => void;
+
+export interface AudioDesc {
+  sampleRate?: number;      // default: AudioContext default (~44100 or 48000)
+  numChannels?: number;     // default: 2 (stereo)
+  bufferFrames?: number;    // default: 128 (one AudioWorklet quantum)
+  volume?: number;          // default: 1.0
+  streamCallback: AudioCallback;
+}
+
+// Reserved for future multi-stream support; initial implementation uses one stream per Audio instance.
+export interface SaudioStream { readonly _brand: "SaudioStream"; readonly id: number }
+
+export interface Audio {
+  readonly sampleRate: number;
+  readonly numChannels: number;
+  readonly isRunning: boolean;
+
+  suspend(): Promise<void>;
+  resume(): Promise<void>;
+  setVolume(volume: number): void;
+  shutdown(): void;
 }
 
 export interface AppEvent {
