@@ -58,6 +58,41 @@ export enum WrapMode {
   MIRROR = "mirror-repeat",
 }
 
+export enum BlendFactor {
+  ZERO = "zero",
+  ONE = "one",
+  SRC_ALPHA = "src-alpha",
+  ONE_MINUS_SRC_ALPHA = "one-minus-src-alpha",
+  DST_ALPHA = "dst-alpha",
+  ONE_MINUS_DST_ALPHA = "one-minus-dst-alpha",
+  SRC_COLOR = "src",
+  DST_COLOR = "dst",
+  ONE_MINUS_SRC_COLOR = "one-minus-src",
+  ONE_MINUS_DST_COLOR = "one-minus-dst",
+  SRC_ALPHA_SATURATED = "src-alpha-saturated",
+  CONSTANT = "constant",
+  ONE_MINUS_CONSTANT = "one-minus-constant",
+}
+
+export enum BlendOp {
+  ADD = "add",
+  SUBTRACT = "subtract",
+  REVERSE_SUBTRACT = "reverse-subtract",
+  MIN = "min",
+  MAX = "max",
+}
+
+export enum StencilOp {
+  KEEP = "keep",
+  ZERO = "zero",
+  REPLACE = "replace",
+  INVERT = "invert",
+  INCREMENT_CLAMP = "increment-clamp",
+  DECREMENT_CLAMP = "decrement-clamp",
+  INCREMENT_WRAP = "increment-wrap",
+  DECREMENT_WRAP = "decrement-wrap",
+}
+
 export enum PixelFormat {
   RGBA8 = "rgba8unorm",
   BGRA8 = "bgra8unorm",
@@ -96,6 +131,8 @@ export interface ImageDesc {
   format?: PixelFormat;
   data?: ArrayBufferView;
   renderTarget?: boolean;
+  /** MSAA sample count for render target textures. Default: 1. */
+  sampleCount?: number;
   label?: string;
 }
 
@@ -127,15 +164,44 @@ export interface ShaderDesc {
   label?: string;
 }
 
+export interface BlendComponentDesc {
+  srcFactor?: BlendFactor;
+  dstFactor?: BlendFactor;
+  operation?: BlendOp;
+}
+
 export interface ColorTargetDesc {
   format?: PixelFormat;
   blendEnabled?: boolean;
+  colorBlend?: BlendComponentDesc;
+  alphaBlend?: BlendComponentDesc;
+  /** Bitmask of GPUColorWrite flags. Defaults to GPUColorWrite.ALL (0xF). */
+  writeMask?: number;
+}
+
+export interface StencilFaceDesc {
+  compare?: CompareFunc;
+  failOp?: StencilOp;
+  depthFailOp?: StencilOp;
+  passOp?: StencilOp;
 }
 
 export interface DepthStencilDesc {
   format?: PixelFormat;
   depthWrite?: boolean;
   depthCompare?: CompareFunc;
+  stencilFront?: StencilFaceDesc;
+  stencilBack?: StencilFaceDesc;
+  /** Default 0xFF */
+  stencilReadMask?: number;
+  /** Default 0xFF */
+  stencilWriteMask?: number;
+}
+
+export interface MsaaDesc {
+  /** Sample count. Must be 1 or 4 in WebGPU (implementations may support 2, 8, 16). Default: 4. */
+  count?: 1 | 2 | 4 | 8 | 16;
+  alphaToCoverage?: boolean;
 }
 
 export interface PipelineDesc {
@@ -149,6 +215,9 @@ export interface PipelineDesc {
   indexType?: IndexType;
   colors?: ColorTargetDesc[];
   depth?: DepthStencilDesc;
+  /** Number of texture/sampler pairs to bind in group 1. */
+  images?: number;
+  msaa?: MsaaDesc;
   label?: string;
 }
 
@@ -174,6 +243,8 @@ export interface PassDesc {
   offscreen?: {
     colorImages: SgImage[];
     depthImage?: SgImage;
+    /** Resolve targets for MSAA color images (one per colorImage). */
+    resolveImages?: SgImage[];
   };
 }
 
@@ -205,6 +276,7 @@ export interface Gfx {
   applyPipeline(pip: SgPipeline): void;
   applyBindings(bind: Bindings): void;
   applyUniforms(data: ArrayBufferView): void;
+  applyStencilRef(ref: number): void;
   draw(baseElement: number, numElements: number, numInstances?: number): void;
   endPass(): void;
   commit(): void;

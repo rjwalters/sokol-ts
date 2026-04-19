@@ -3,7 +3,7 @@ import {
   type BufferDesc, type ImageDesc, type SamplerDesc, type ShaderDesc, type PipelineDesc,
   type Bindings, type PassDesc, type Gfx,
   BufferUsage, IndexType, LoadAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
-  FilterMode, WrapMode,
+  FilterMode, WrapMode, BlendFactor, BlendOp, StencilOp,
 } from "./types.js";
 
 let nextId = 1;
@@ -50,6 +50,7 @@ export function createGfx(
   const samplers = new Map<number, SamplerSlot>();
   const shaders = new Map<number, ShaderSlot>();
   const pipelines = new Map<number, PipelineSlot>();
+  const pipelineCache = new Map<string, GPURenderPipeline>();
 
   // Per-frame state
   let encoder: GPUCommandEncoder | null = null;
@@ -72,6 +73,20 @@ export function createGfx(
       });
     }
     return uniformBuffer;
+  }
+
+  function pipelineKey(desc: PipelineDesc): string {
+    return JSON.stringify({
+      shader: desc.shader.id,
+      layout: desc.layout,
+      primitive: desc.primitive,
+      cullMode: desc.cullMode,
+      indexType: desc.indexType,
+      colors: desc.colors,
+      depth: desc.depth,
+      images: desc.images,
+      msaa: desc.msaa,
+    });
   }
 
   function gpuBufferUsage(usage: BufferUsage | undefined): number {
@@ -117,6 +132,7 @@ export function createGfx(
         size: { width: desc.width, height: desc.height },
         format: fmt,
         usage,
+        sampleCount: desc.sampleCount ?? 1,
         label: desc.label,
       });
       if (desc.data) {
@@ -174,9 +190,18 @@ export function createGfx(
       const colorTargets: GPUColorTargetState[] = (desc.colors ?? [{}]).map(c => ({
         format: (c.format as GPUTextureFormat) ?? format,
         blend: c.blendEnabled ? {
-          color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
-          alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+          color: {
+            srcFactor: (c.colorBlend?.srcFactor ?? BlendFactor.SRC_ALPHA) as GPUBlendFactor,
+            dstFactor: (c.colorBlend?.dstFactor ?? BlendFactor.ONE_MINUS_SRC_ALPHA) as GPUBlendFactor,
+            operation: (c.colorBlend?.operation ?? BlendOp.ADD) as GPUBlendOperation,
+          },
+          alpha: {
+            srcFactor: (c.alphaBlend?.srcFactor ?? BlendFactor.ONE) as GPUBlendFactor,
+            dstFactor: (c.alphaBlend?.dstFactor ?? BlendFactor.ONE_MINUS_SRC_ALPHA) as GPUBlendFactor,
+            operation: (c.alphaBlend?.operation ?? BlendOp.ADD) as GPUBlendOperation,
+          },
         } as GPUBlendState : undefined,
+        writeMask: c.writeMask ?? GPUColorWrite.ALL,
       }));
 
       const bindGroupLayouts: GPUBindGroupLayout[] = [];
@@ -190,39 +215,78 @@ export function createGfx(
         }],
       }));
 
-      // Group 1: textures + samplers (if any)
-      // Users can extend this via custom bind group layouts later
+      // Group 1: textures + samplers (one texture + one sampler per image slot)
+      if (desc.images && desc.images > 0) {
+        const texSamplerEntries: GPUBindGroupLayoutEntry[] = [];
+        for (let i = 0; i < desc.images; i++) {
+          texSamplerEntries.push({
+            binding: i * 2,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: { sampleType: "float" },
+          });
+          texSamplerEntries.push({
+            binding: i * 2 + 1,
+            visibility: GPUShaderStage.FRAGMENT,
+            sampler: { type: "filtering" },
+          });
+        }
+        bindGroupLayouts.push(device.createBindGroupLayout({ entries: texSamplerEntries }));
+      }
 
       const pipelineLayout = device.createPipelineLayout({
         bindGroupLayouts,
       });
 
-      const gpuPipeline = device.createRenderPipeline({
-        layout: pipelineLayout,
-        vertex: {
-          module: shd.vertexModule,
-          entryPoint: "vs_main",
-          buffers: vertexBuffers,
-        },
-        fragment: {
-          module: shd.fragmentModule,
-          entryPoint: "fs_main",
-          targets: colorTargets,
-        },
-        primitive: {
-          topology: (desc.primitive ?? PrimitiveType.TRIANGLES) as GPUPrimitiveTopology,
-          cullMode: (desc.cullMode ?? CullMode.NONE) as GPUCullMode,
-          stripIndexFormat: desc.primitive === PrimitiveType.TRIANGLE_STRIP || desc.primitive === PrimitiveType.LINE_STRIP
-            ? (desc.indexType === IndexType.UINT32 ? "uint32" : "uint16")
-            : undefined,
-        },
-        depthStencil: desc.depth ? {
-          format: (desc.depth.format ?? PixelFormat.DEPTH24_STENCIL8) as GPUTextureFormat,
-          depthWriteEnabled: desc.depth.depthWrite ?? true,
-          depthCompare: (desc.depth.depthCompare ?? CompareFunc.LESS) as GPUCompareFunction,
-        } : undefined,
-        label: desc.label,
-      });
+      // Build stencil face descriptors
+      function buildStencilFace(face: NonNullable<typeof desc.depth>["stencilFront"]): GPUStencilFaceState | undefined {
+        if (!face) return undefined;
+        return {
+          compare: (face.compare ?? CompareFunc.ALWAYS) as GPUCompareFunction,
+          failOp: (face.failOp ?? StencilOp.KEEP) as GPUStencilOperation,
+          depthFailOp: (face.depthFailOp ?? StencilOp.KEEP) as GPUStencilOperation,
+          passOp: (face.passOp ?? StencilOp.KEEP) as GPUStencilOperation,
+        };
+      }
+
+      const key = pipelineKey(desc);
+      let gpuPipeline = pipelineCache.get(key);
+      if (!gpuPipeline) {
+        gpuPipeline = device.createRenderPipeline({
+          layout: pipelineLayout,
+          vertex: {
+            module: shd.vertexModule,
+            entryPoint: "vs_main",
+            buffers: vertexBuffers,
+          },
+          fragment: {
+            module: shd.fragmentModule,
+            entryPoint: "fs_main",
+            targets: colorTargets,
+          },
+          primitive: {
+            topology: (desc.primitive ?? PrimitiveType.TRIANGLES) as GPUPrimitiveTopology,
+            cullMode: (desc.cullMode ?? CullMode.NONE) as GPUCullMode,
+            stripIndexFormat: desc.primitive === PrimitiveType.TRIANGLE_STRIP || desc.primitive === PrimitiveType.LINE_STRIP
+              ? (desc.indexType === IndexType.UINT32 ? "uint32" : "uint16")
+              : undefined,
+          },
+          depthStencil: desc.depth ? {
+            format: (desc.depth.format ?? PixelFormat.DEPTH24_STENCIL8) as GPUTextureFormat,
+            depthWriteEnabled: desc.depth.depthWrite ?? true,
+            depthCompare: (desc.depth.depthCompare ?? CompareFunc.LESS) as GPUCompareFunction,
+            stencilFront: buildStencilFace(desc.depth.stencilFront),
+            stencilBack: buildStencilFace(desc.depth.stencilBack),
+            stencilReadMask: desc.depth.stencilReadMask ?? 0xFF,
+            stencilWriteMask: desc.depth.stencilWriteMask ?? 0xFF,
+          } : undefined,
+          multisample: desc.msaa ? {
+            count: desc.msaa.count ?? 4,
+            alphaToCoverageEnabled: desc.msaa.alphaToCoverage ?? false,
+          } : undefined,
+          label: desc.label,
+        });
+        pipelineCache.set(key, gpuPipeline);
+      }
 
       pipelines.set(h.id, { gpu: gpuPipeline, desc, indexType: desc.indexType ?? IndexType.NONE });
       return h;
@@ -252,14 +316,17 @@ export function createGfx(
       const colorAttachments: GPURenderPassColorAttachment[] = [];
 
       if (desc?.offscreen) {
+        const resolveImages = desc.offscreen.resolveImages;
         for (let i = 0; i < desc.offscreen.colorImages.length; i++) {
           const img = images.get(desc.offscreen.colorImages[i].id);
           if (!img) throw new Error("Invalid offscreen color image");
           const ca = desc.colorAttachments?.[i];
+          const resolveImg = resolveImages?.[i] ? images.get(resolveImages[i].id) : undefined;
           colorAttachments.push({
             view: img.view,
+            resolveTarget: resolveImg?.view,
             loadOp: ca?.action === LoadAction.LOAD ? "load" : "clear",
-            storeOp: "store",
+            storeOp: resolveImg ? "discard" : "store",
             clearValue: ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 },
           });
         }
@@ -300,6 +367,24 @@ export function createGfx(
         const fmt = currentPipeline?.indexType === IndexType.UINT32 ? "uint32" : "uint16";
         passEncoder.setIndexBuffer(buf.gpu, fmt);
       }
+      // Group 1: texture + sampler pairs
+      if (bind.images?.length) {
+        const entries: GPUBindGroupEntry[] = [];
+        bind.images.forEach((imgHandle, i) => {
+          const img = images.get(imgHandle.id);
+          if (!img) throw new Error(`Invalid image at binding index ${i}`);
+          const smpHandle = bind.samplers?.[i] ?? bind.samplers?.[0];
+          const smp = smpHandle ? samplers.get(smpHandle.id) : undefined;
+          if (!smp) throw new Error(`Missing sampler for image binding index ${i}`);
+          entries.push({ binding: i * 2, resource: img.view });
+          entries.push({ binding: i * 2 + 1, resource: smp.gpu });
+        });
+        const bg = device.createBindGroup({
+          layout: currentPipeline!.gpu.getBindGroupLayout(1),
+          entries,
+        });
+        passEncoder.setBindGroup(1, bg);
+      }
     },
 
     applyUniforms(data: ArrayBufferView) {
@@ -317,6 +402,11 @@ export function createGfx(
       passEncoder.setBindGroup(0, uniformBindGroup, [alignedOffset]);
 
       uniformOffset = alignedOffset + Math.max(data.byteLength, 256);
+    },
+
+    applyStencilRef(ref: number) {
+      if (!passEncoder) throw new Error("No active pass");
+      passEncoder.setStencilReference(ref);
     },
 
     draw(baseElement: number, numElements: number, numInstances = 1) {
