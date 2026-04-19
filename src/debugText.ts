@@ -308,7 +308,17 @@ struct VOut { @builtin(position) clip: vec4f, @location(0) uv: vec2f, @location(
 // Factory
 // ---------------------------------------------------------------------------
 export function createDebugText(gfx: Gfx, desc?: DebugTextDesc): DebugText {
-  const maxChars = desc?.maxChars ?? 8192;
+  // Uint16 index buffer can address vertices 0–65535.  Each character uses
+  // 4 vertices, so the maximum safe character count is floor(65535/4) = 16383.
+  const MAX_CHARS_UINT16 = 16383;
+  const requestedMaxChars = desc?.maxChars ?? 8192;
+  if (requestedMaxChars > MAX_CHARS_UINT16) {
+    console.warn(
+      `debugText: maxChars ${requestedMaxChars} exceeds Uint16 index limit; ` +
+      `clamped to ${MAX_CHARS_UINT16}`,
+    );
+  }
+  const maxChars = Math.min(requestedMaxChars, MAX_CHARS_UINT16);
   const origin   = desc?.origin   ?? "top-left";
   const device   = gfx.device;
 
