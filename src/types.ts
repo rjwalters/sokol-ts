@@ -231,6 +231,10 @@ export interface Bindings {
 export interface ColorAttachment {
   action?: LoadAction;
   color?: [number, number, number, number];
+  /** GPU store operation for this attachment. Defaults to "store". */
+  storeAction?: GPUStoreOp;
+  /** Resolve target for MSAA. When set, the MSAA texture resolves into this image. */
+  resolveImage?: SgImage;
 }
 
 export interface PassDesc {

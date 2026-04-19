@@ -311,7 +311,9 @@ export function createGfx(
     },
 
     beginPass(desc?: PassDesc) {
-      encoder = device.createCommandEncoder();
+      if (!encoder) {
+        encoder = device.createCommandEncoder();
+      }
 
       const colorAttachments: GPURenderPassColorAttachment[] = [];
 
@@ -321,12 +323,16 @@ export function createGfx(
           const img = images.get(desc.offscreen.colorImages[i].id);
           if (!img) throw new Error("Invalid offscreen color image");
           const ca = desc.colorAttachments?.[i];
-          const resolveImg = resolveImages?.[i] ? images.get(resolveImages[i].id) : undefined;
+          // Per-attachment resolveImage takes priority, then offscreen-level resolveImages
+          const resolveImgHandle = ca?.resolveImage ?? (resolveImages?.[i] ? resolveImages[i] : undefined);
+          const resolveImg = resolveImgHandle ? images.get(resolveImgHandle.id) : undefined;
+          // storeAction takes priority; default to "discard" when resolving, "store" otherwise
+          const storeOp = ca?.storeAction ?? (resolveImg ? "discard" : "store");
           colorAttachments.push({
             view: img.view,
             resolveTarget: resolveImg?.view,
             loadOp: ca?.action === LoadAction.LOAD ? "load" : "clear",
-            storeOp: resolveImg ? "discard" : "store",
+            storeOp,
             clearValue: ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 },
           });
         }
@@ -336,7 +342,7 @@ export function createGfx(
         colorAttachments.push({
           view: textureView,
           loadOp: ca?.action === LoadAction.LOAD ? "load" : "clear",
-          storeOp: "store",
+          storeOp: ca?.storeAction ?? "store",
           clearValue: ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 },
         });
       }
