@@ -140,7 +140,7 @@ export async function createAudio(desc: AudioDesc): Promise<Audio> {
     },
 
     setVolume(v: number): void {
-      gainNode.gain.value = v;
+      gainNode.gain.value = Math.max(0, Math.min(1, v));
     },
 
     shutdown(): void {
