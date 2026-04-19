@@ -107,7 +107,17 @@ export async function run(desc: AppDesc): Promise<() => void> {
   function frame() {
     if (!running) return;
     resize();
-    desc.frame(gfx);
+    try {
+      desc.frame(gfx);
+    } catch (err) {
+      running = false;
+      if (desc.onError) {
+        desc.onError(err);
+      } else {
+        throw err;
+      }
+      return;
+    }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
@@ -120,6 +130,7 @@ export async function run(desc: AppDesc): Promise<() => void> {
       target.removeEventListener(type, handler);
     }
     desc.cleanup?.(gfx);
+    context.unconfigure();
     device.destroy();
   };
 }
