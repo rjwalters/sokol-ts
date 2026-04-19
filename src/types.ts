@@ -67,6 +67,17 @@ export enum PixelFormat {
   RG8 = "rg8unorm",
   RGBA16F = "rgba16float",
   RGBA32F = "rgba32float",
+  // Block-compressed formats (require device feature "texture-compression-*")
+  BC1_RGBA = "bc1-rgba-unorm",
+  BC3_RGBA = "bc3-rgba-unorm",
+  BC4_R = "bc4-r-unorm",
+  BC5_RG = "bc5-rg-unorm",
+  BC6H_RGB = "bc6h-rgb-ufloat",
+  BC7_RGBA = "bc7-rgba-unorm",
+  ETC2_RGB8 = "etc2-rgb8unorm",
+  ETC2_RGBA8 = "etc2-rgba8unorm",
+  ASTC_4X4 = "astc-4x4-unorm",
+  ASTC_8X8 = "astc-8x8-unorm",
 }
 
 export enum LoadAction {
@@ -87,6 +98,8 @@ export enum BufferUsage {
   INDIRECT  = 3,
 }
 
+export type TextureDimension = "2d" | "3d" | "cube";
+
 // Desc structs — all fields optional, defaults applied at creation
 
 export interface BufferDesc {
@@ -99,10 +112,18 @@ export interface BufferDesc {
 export interface ImageDesc {
   width: number;
   height: number;
+  /** Depth for 3D textures (default 1). */
+  depth?: number;
   format?: PixelFormat;
   data?: ArrayBufferView;
   renderTarget?: boolean;
   sampleCount?: 1 | 4;
+  /** Texture dimension: "2d" (default), "3d", or "cube". */
+  dimension?: TextureDimension;
+  /** Number of mipmaps. 0 = auto-generate full chain, 1 = no mipmaps (default). */
+  numMipmaps?: number;
+  /** Number of array layers for 2D array textures (default 1). Ignored for "cube" (always 6). */
+  numSlices?: number;
   label?: string;
 }
 
@@ -256,6 +277,7 @@ export interface Gfx {
 
   isValid(handle: Handle): boolean;
   updateBuffer(buf: SgBuffer, data: ArrayBufferView): void;
+  updateImage(img: SgImage, data: ArrayBufferView, mipLevel?: number, arrayLayer?: number): void;
   writeImageBitmap(img: SgImage, bitmap: ImageBitmap): void;
 
   beginPass(desc?: PassDesc): void;
