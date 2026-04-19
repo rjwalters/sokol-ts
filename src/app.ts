@@ -173,7 +173,11 @@ export async function run(desc: AppDesc): Promise<() => void> {
     } catch (err) {
       desc.postFrame?.(gfx);
       if (desc.onError) {
-        desc.onError(err);
+        if (desc.onError(err) === false) {
+          running = false;
+        } else {
+          requestAnimationFrame(frame);
+        }
       } else {
         console.error("[sokol-ts] frame error:", err);
         running = false;

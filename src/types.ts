@@ -203,7 +203,7 @@ export interface AppDesc {
   requiredFeatures?: GPUFeatureName[];
   requiredLimits?: Record<string, number>;
   dpiIndependentCoords?: boolean; // default false; when true all event coords are in CSS pixels
-  onError?: (err: unknown) => void;
+  onError?: (err: unknown) => boolean | void;
   preFrame?: (gfx: Gfx) => void;
   postFrame?: (gfx: Gfx) => void;
   targetFps?: number;
