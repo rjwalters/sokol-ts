@@ -199,7 +199,7 @@ export interface Gfx {
   destroyShader(shd: SgShader): void;
   destroyPipeline(pip: SgPipeline): void;
 
-  updateBuffer(buf: SgBuffer, data: ArrayBufferView): void;
+  updateBuffer(buf: SgBuffer, data: ArrayBufferView, dstOffset?: number): void;
 
   beginPass(desc?: PassDesc): void;
   applyPipeline(pip: SgPipeline): void;

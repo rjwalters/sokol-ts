@@ -75,9 +75,15 @@ export function createGfx(
   }
 
   function gpuBufferUsage(usage: BufferUsage | undefined): number {
-    const base = GPUBufferUsage.COPY_DST;
     switch (usage) {
-      default: return base | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
+      case BufferUsage.IMMUTABLE:
+        // No COPY_DST — data is supplied only at creation via mappedAtCreation
+        return GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
+      case BufferUsage.DYNAMIC:
+      case BufferUsage.STREAM:
+        return GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
+      default:
+        return GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
     }
   }
 
@@ -91,9 +97,10 @@ export function createGfx(
 
     makeBuffer(desc: BufferDesc): SgBuffer {
       const h = handle<SgBuffer>("SgBuffer");
-      const size = desc.data ? desc.data.byteLength : (desc.size ?? 256);
+      const rawSize = desc.data ? desc.data.byteLength : (desc.size ?? 256);
+      const alignedSize = Math.max(4, Math.ceil(rawSize / 4) * 4);
       const gpu = device.createBuffer({
-        size,
+        size: alignedSize,
         usage: gpuBufferUsage(desc.usage),
         mappedAtCreation: !!desc.data,
         label: desc.label,
@@ -240,10 +247,14 @@ export function createGfx(
     destroyShader(shd: SgShader) { shaders.delete(shd.id); },
     destroyPipeline(pip: SgPipeline) { pipelines.delete(pip.id); },
 
-    updateBuffer(buf: SgBuffer, data: ArrayBufferView) {
+    updateBuffer(buf: SgBuffer, data: ArrayBufferView, dstOffset = 0) {
       const slot = buffers.get(buf.id);
       if (!slot) throw new Error("Invalid buffer handle");
-      device.queue.writeBuffer(slot.gpu, 0, data.buffer, data.byteOffset, data.byteLength);
+      if (slot.desc.usage === BufferUsage.IMMUTABLE) {
+        throw new Error("Cannot update an IMMUTABLE buffer");
+      }
+      const writeBytes = Math.ceil(data.byteLength / 4) * 4;
+      device.queue.writeBuffer(slot.gpu, dstOffset, data.buffer, data.byteOffset, writeBytes);
     },
 
     beginPass(desc?: PassDesc) {
