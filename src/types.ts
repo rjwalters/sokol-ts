@@ -210,12 +210,21 @@ export interface AppDesc {
   targetFps?: number;
 }
 
+export type ShaderRecompileResult =
+  | { ok: true; shader: SgShader }
+  | { ok: false; vertexError?: string; fragmentError?: string };
+
 export interface Gfx {
   makeBuffer(desc: BufferDesc): SgBuffer;
   makeImage(desc: ImageDesc): SgImage;
   makeSampler(desc: SamplerDesc): SgSampler;
   makeShader(desc: ShaderDesc): Promise<SgShader>;
   makePipeline(desc: PipelineDesc): SgPipeline;
+  recompileShader(
+    shd: SgShader,
+    sources: { vertexSource?: string; fragmentSource?: string },
+    callback?: (result: ShaderRecompileResult) => void,
+  ): Promise<ShaderRecompileResult>;
 
   destroyBuffer(buf: SgBuffer): void;
   destroyImage(img: SgImage): void;
