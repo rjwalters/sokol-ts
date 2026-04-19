@@ -31,7 +31,7 @@ export interface DebugTextDesc {
 export interface DebugText {
   /** Print text at pixel position (x, y) with an optional RGBA color override. */
   print(x: number, y: number, text: string, color?: [number, number, number, number]): void;
-  /** printf-style helper — thin wrapper around print(). Supports %s %d %i %f %.Nf %%. */
+  /** printf-style helper — thin wrapper around print(). Supports %s %d %i %f %e %E %g %G %.Nf %%. */
   printf(x: number, y: number, fmt: string, ...args: unknown[]): void;
   /** Set the default color for subsequent print() calls. Components in [0, 1]. */
   setColor(r: number, g: number, b: number, a?: number): void;
@@ -308,7 +308,17 @@ struct VOut { @builtin(position) clip: vec4f, @location(0) uv: vec2f, @location(
 // Factory
 // ---------------------------------------------------------------------------
 export function createDebugText(gfx: Gfx, desc?: DebugTextDesc): DebugText {
-  const maxChars = desc?.maxChars ?? 8192;
+  // Uint16 index buffer can address vertices 0–65535.  Each character uses
+  // 4 vertices, so the maximum safe character count is floor(65535/4) = 16383.
+  const MAX_CHARS_UINT16 = 16383;
+  const requestedMaxChars = desc?.maxChars ?? 8192;
+  if (requestedMaxChars > MAX_CHARS_UINT16) {
+    console.warn(
+      `debugText: maxChars ${requestedMaxChars} exceeds Uint16 index limit; ` +
+      `clamped to ${MAX_CHARS_UINT16}`,
+    );
+  }
+  const maxChars = Math.min(requestedMaxChars, MAX_CHARS_UINT16);
   const origin   = desc?.origin   ?? "top-left";
   const device   = gfx.device;
 
@@ -566,9 +576,19 @@ export function createDebugText(gfx: Gfx, desc?: DebugTextDesc): DebugText {
       const str = fmt.replace(/%(\.\d+)?([sdifeEgG%])/g, (_m, prec, spec) => {
         if (spec === "%") return "%";
         const val = args[argIdx++];
-        if (spec === "f" || spec === "e" || spec === "E" || spec === "g" || spec === "G") {
+        if (spec === "f") {
           const decimals = prec ? parseInt(prec.slice(1)) : 6;
           return (val as number).toFixed(decimals);
+        }
+        if (spec === "e" || spec === "E") {
+          const decimals = prec ? parseInt(prec.slice(1)) : 6;
+          const s = (val as number).toExponential(decimals);
+          return spec === "E" ? s.toUpperCase() : s;
+        }
+        if (spec === "g" || spec === "G") {
+          const precision = prec ? parseInt(prec.slice(1)) : 6;
+          const s = (val as number).toPrecision(precision || 1);
+          return spec === "G" ? s.toUpperCase() : s;
         }
         if (spec === "d" || spec === "i") return String(Math.trunc(val as number));
         return String(val);
