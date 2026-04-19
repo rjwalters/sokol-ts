@@ -192,6 +192,7 @@ export interface AppDesc {
   powerPreference?: "low-power" | "high-performance";
   requiredFeatures?: GPUFeatureName[];
   requiredLimits?: Record<string, number>;
+  dpiIndependentCoords?: boolean; // default false; when true all event coords are in CSS pixels
 }
 
 export interface Gfx {
@@ -222,6 +223,9 @@ export interface Gfx {
   readonly device: GPUDevice;
   readonly width: number;
   readonly height: number;
+  readonly cssWidth: number;   // canvas.clientWidth  (CSS pixels)
+  readonly cssHeight: number;  // canvas.clientHeight (CSS pixels)
+  readonly dpiScale: number;   // current effective pixelRatio
   readonly dt: number;
   readonly frameCount: number;
   readonly frameStats: DrawStats;
