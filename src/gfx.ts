@@ -254,7 +254,16 @@ export function createGfx(
         throw new Error("Cannot update an IMMUTABLE buffer");
       }
       const writeBytes = Math.ceil(data.byteLength / 4) * 4;
-      device.queue.writeBuffer(slot.gpu, dstOffset, data.buffer, data.byteOffset, writeBytes);
+      if (writeBytes === data.byteLength) {
+        // Data is already 4-byte aligned, no padding needed
+        device.queue.writeBuffer(slot.gpu, dstOffset, data.buffer, data.byteOffset, writeBytes);
+      } else {
+        // writeBytes exceeds data.byteLength; copy into a zero-padded buffer
+        // to avoid reading past the end of the source ArrayBuffer
+        const padded = new Uint8Array(writeBytes);
+        padded.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+        device.queue.writeBuffer(slot.gpu, dstOffset, padded.buffer, 0, writeBytes);
+      }
     },
 
     beginPass(desc?: PassDesc) {
