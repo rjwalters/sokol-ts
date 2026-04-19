@@ -261,11 +261,19 @@ export function createSfetch(desc?: FetchSetupDesc): SfetchContext {
       }
       for (const req of requests) {
         const originalDone = req.onDone;
-        req.onDone = (result, url) => {
-          originalDone(result, url);
-          if (--remaining === 0) onAllDone();
+        const originalError = req.onError;
+        const wrapped: FetchRequest<unknown> = {
+          ...req,
+          onDone: (result, url) => {
+            originalDone(result, url);
+            if (--remaining === 0) onAllDone();
+          },
+          onError: (error, url) => {
+            if (originalError) originalError(error, url);
+            if (--remaining === 0) onAllDone();
+          },
         };
-        ctx.fetch(req);
+        ctx.fetch(wrapped);
       }
     },
 
