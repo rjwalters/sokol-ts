@@ -33,6 +33,7 @@ interface ShaderSlot {
 interface PipelineSlot {
   gpu: GPURenderPipeline;
   desc: PipelineDesc;
+  gpuDesc: GPURenderPipelineDescriptor;
   indexType: IndexType;
 }
 
@@ -52,6 +53,8 @@ export function createGfx(
   const samplers = new Map<number, SamplerSlot>();
   const shaders = new Map<number, ShaderSlot>();
   const pipelines = new Map<number, PipelineSlot>();
+  // shader id -> set of pipeline ids that reference it
+  const shaderPipelineDeps = new Map<number, Set<number>>();
 
   // Per-frame state
   let encoder: GPUCommandEncoder | null = null;
@@ -93,6 +96,45 @@ export function createGfx(
         return base | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Internal helper for pipeline hot-reload rebuilding
+  // Instead of duplicating pipeline construction logic, we store the original
+  // GPURenderPipelineDescriptor at creation time and clone it on rebuild,
+  // only replacing the shader modules. This ensures 1:1 fidelity with the
+  // original pipeline regardless of blend, stencil, MSAA, or bind group config.
+
+  async function rebuildPipeline(pipId: number, slot: PipelineSlot): Promise<void> {
+    const shd = shaders.get(slot.desc.shader.id);
+    if (!shd) return;
+
+    // Clone the stored descriptor and replace only the shader modules
+    const rebuiltDesc: GPURenderPipelineDescriptor = {
+      ...slot.gpuDesc,
+      vertex: {
+        ...slot.gpuDesc.vertex,
+        module: shd.vertexModule,
+      },
+      fragment: slot.gpuDesc.fragment ? {
+        ...slot.gpuDesc.fragment,
+        module: shd.fragmentModule,
+      } : undefined,
+    };
+
+    try {
+      const newGpuPipeline = await device.createRenderPipelineAsync(rebuiltDesc);
+      // Atomic slot swap -- handle id is unchanged, existing references stay valid
+      slot.gpu = newGpuPipeline;
+      const pipHandle: SgPipeline = { _brand: "SgPipeline", id: pipId } as SgPipeline;
+      gfx.onPipelineRebuilt?.(pipHandle);
+    } catch (err) {
+      console.warn(`[sokol-ts] Pipeline ${pipId} rebuild failed, keeping old pipeline:`, err);
+      const pipHandle: SgPipeline = { _brand: "SgPipeline", id: pipId } as SgPipeline;
+      gfx.onPipelineRebuildError?.(pipHandle, err);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
 
   const gfx: Gfx = {
     get canvas() { return canvas; },
@@ -277,7 +319,7 @@ export function createGfx(
         bindGroupLayouts,
       });
 
-      const gpuPipeline = device.createRenderPipeline({
+      const gpuPipelineDesc: GPURenderPipelineDescriptor = {
         layout: pipelineLayout,
         vertex: {
           module: shd.vertexModule,
@@ -303,9 +345,17 @@ export function createGfx(
         } : undefined,
         multisample: { count: desc.multisample?.count ?? 1 },
         label: desc.label,
-      });
+      };
 
-      pipelines.set(h.id, { gpu: gpuPipeline, desc, indexType: desc.indexType ?? IndexType.NONE });
+      const gpuPipeline = device.createRenderPipeline(gpuPipelineDesc);
+
+      pipelines.set(h.id, { gpu: gpuPipeline, desc, gpuDesc: gpuPipelineDesc, indexType: desc.indexType ?? IndexType.NONE });
+
+      // Track shader -> pipeline dependency for hot-reload rebuilding
+      const deps = shaderPipelineDeps.get(desc.shader.id) ?? new Set<number>();
+      deps.add(h.id);
+      shaderPipelineDeps.set(desc.shader.id, deps);
+
       return h;
     },
 
@@ -380,7 +430,18 @@ export function createGfx(
     },
     destroySampler(smp: SgSampler) { samplers.delete(smp.id); },
     destroyShader(shd: SgShader) { shaders.delete(shd.id); },
-    destroyPipeline(pip: SgPipeline) { pipelines.delete(pip.id); },
+    destroyPipeline(pip: SgPipeline) {
+      const slot = pipelines.get(pip.id);
+      if (slot) {
+        const deps = shaderPipelineDeps.get(slot.desc.shader.id);
+        deps?.delete(pip.id);
+        // Prune empty dep sets to avoid memory leaks
+        if (deps && deps.size === 0) {
+          shaderPipelineDeps.delete(slot.desc.shader.id);
+        }
+        pipelines.delete(pip.id);
+      }
+    },
 
     updateBuffer(buf: SgBuffer, data: ArrayBufferView) {
       const slot = buffers.get(buf.id);
@@ -627,6 +688,21 @@ export function createGfx(
       lastFrameTime = now;
       _frameCount++;
     },
+
+    async rebuildPipelinesForShader(shader: SgShader): Promise<void> {
+      const deps = shaderPipelineDeps.get(shader.id);
+      if (!deps) return;
+      // Snapshot the set to avoid issues if deps mutate during async iteration
+      // Rebuild all dependent pipelines in parallel for better performance
+      await Promise.all([...deps].map(pipId => {
+        const slot = pipelines.get(pipId);
+        if (!slot) return Promise.resolve();
+        return rebuildPipeline(pipId, slot);
+      }));
+    },
+
+    onPipelineRebuilt: undefined,
+    onPipelineRebuildError: undefined,
   };
 
   return gfx;
