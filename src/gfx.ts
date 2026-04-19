@@ -6,11 +6,6 @@ import {
   FilterMode, WrapMode,
 } from "./types.js";
 
-let nextId = 1;
-function handle<T extends { readonly _brand: string; readonly id: number }>(brand: string): T {
-  return { _brand: brand, id: nextId++ } as unknown as T;
-}
-
 interface BufferSlot {
   gpu: GPUBuffer;
   desc: BufferDesc;
@@ -45,6 +40,11 @@ export function createGfx(
   context: GPUCanvasContext,
   format: GPUTextureFormat,
 ): Gfx {
+  let nextId = 1;
+  function handle<T extends { readonly _brand: string; readonly id: number }>(brand: string): T {
+    return { _brand: brand, id: nextId++ } as unknown as T;
+  }
+
   const buffers = new Map<number, BufferSlot>();
   const images = new Map<number, ImageSlot>();
   const samplers = new Map<number, SamplerSlot>();

@@ -12,23 +12,26 @@ export async function run(desc: AppDesc): Promise<() => void> {
     throw new Error("WebGPU is not supported in this browser");
   }
 
-  const adapterOptions: GPURequestAdapterOptions = {};
-  if (desc.powerPreference !== undefined) {
-    adapterOptions.powerPreference = desc.powerPreference;
-  }
-  const adapter = await navigator.gpu.requestAdapter(adapterOptions);
-  if (!adapter) throw new Error("Failed to get GPU adapter");
+  const callerDevice = desc.device;
+  const device = callerDevice ?? await (async () => {
+    const adapterOptions: GPURequestAdapterOptions = {};
+    if (desc.powerPreference !== undefined) {
+      adapterOptions.powerPreference = desc.powerPreference;
+    }
+    const adapter = await navigator.gpu.requestAdapter(adapterOptions);
+    if (!adapter) throw new Error("Failed to get GPU adapter");
 
-  const reqFeatures: GPUFeatureName[] = desc.requiredFeatures ?? [];
-  const unsupported = reqFeatures.filter(f => !adapter.features.has(f));
-  if (unsupported.length > 0) {
-    throw new Error(`GPU adapter does not support required features: ${unsupported.join(", ")}`);
-  }
+    const reqFeatures: GPUFeatureName[] = desc.requiredFeatures ?? [];
+    const unsupported = reqFeatures.filter(f => !adapter.features.has(f));
+    if (unsupported.length > 0) {
+      throw new Error(`GPU adapter does not support required features: ${unsupported.join(", ")}`);
+    }
 
-  const device = await adapter.requestDevice({
-    requiredFeatures: reqFeatures,
-    requiredLimits: desc.requiredLimits,
-  });
+    return adapter.requestDevice({
+      requiredFeatures: reqFeatures,
+      requiredLimits: desc.requiredLimits,
+    });
+  })();
   const context = canvas.getContext("webgpu")!;
   const format = navigator.gpu.getPreferredCanvasFormat();
 
@@ -120,6 +123,6 @@ export async function run(desc: AppDesc): Promise<() => void> {
       target.removeEventListener(type, handler);
     }
     desc.cleanup?.(gfx);
-    device.destroy();
+    if (!callerDevice) device.destroy();
   };
 }
