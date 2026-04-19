@@ -209,6 +209,11 @@ export interface Gfx {
   endPass(): void;
   commit(): void;
 
+  rebuildPipelinesForShader(shader: SgShader): Promise<void>;
+
+  onPipelineRebuilt?: (pip: SgPipeline) => void;
+  onPipelineRebuildError?: (pip: SgPipeline, error: unknown) => void;
+
   readonly canvas: HTMLCanvasElement;
   readonly device: GPUDevice;
   readonly width: number;

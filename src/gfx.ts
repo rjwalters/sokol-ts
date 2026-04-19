@@ -50,6 +50,8 @@ export function createGfx(
   const samplers = new Map<number, SamplerSlot>();
   const shaders = new Map<number, ShaderSlot>();
   const pipelines = new Map<number, PipelineSlot>();
+  // shader id → set of pipeline ids that reference it
+  const shaderPipelineDeps = new Map<number, Set<number>>();
 
   // Per-frame state
   let encoder: GPUCommandEncoder | null = null;
@@ -80,6 +82,90 @@ export function createGfx(
       default: return base | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Internal helpers for pipeline hot-reload rebuilding
+
+  function buildGpuPipelineDescriptor(slot: PipelineSlot, shd: ShaderSlot): GPURenderPipelineDescriptor {
+    const desc = slot.desc;
+    const vertexBuffers: GPUVertexBufferLayout[] = desc.layout.buffers.map((buf, i) => ({
+      arrayStride: buf.stride,
+      stepMode: buf.stepMode ?? "vertex",
+      attributes: desc.layout.attrs
+        .filter(a => (a.bufferIndex ?? 0) === i)
+        .map(a => ({
+          format: a.format as GPUVertexFormat,
+          offset: a.offset ?? 0,
+          shaderLocation: a.shaderLocation,
+        })),
+    }));
+
+    const colorTargets: GPUColorTargetState[] = (desc.colors ?? [{}]).map(c => ({
+      format: (c.format as GPUTextureFormat) ?? format,
+      blend: c.blendEnabled ? {
+        color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+        alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+      } as GPUBlendState : undefined,
+    }));
+
+    const bindGroupLayouts: GPUBindGroupLayout[] = [];
+    bindGroupLayouts.push(device.createBindGroupLayout({
+      entries: [{
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform", hasDynamicOffset: true },
+      }],
+    }));
+
+    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts });
+
+    return {
+      layout: pipelineLayout,
+      vertex: {
+        module: shd.vertexModule,
+        entryPoint: "vs_main",
+        buffers: vertexBuffers,
+      },
+      fragment: {
+        module: shd.fragmentModule,
+        entryPoint: "fs_main",
+        targets: colorTargets,
+      },
+      primitive: {
+        topology: (desc.primitive ?? PrimitiveType.TRIANGLES) as GPUPrimitiveTopology,
+        cullMode: (desc.cullMode ?? CullMode.NONE) as GPUCullMode,
+        stripIndexFormat: desc.primitive === PrimitiveType.TRIANGLE_STRIP || desc.primitive === PrimitiveType.LINE_STRIP
+          ? (desc.indexType === IndexType.UINT32 ? "uint32" : "uint16")
+          : undefined,
+      },
+      depthStencil: desc.depth ? {
+        format: (desc.depth.format ?? PixelFormat.DEPTH24_STENCIL8) as GPUTextureFormat,
+        depthWriteEnabled: desc.depth.depthWrite ?? true,
+        depthCompare: (desc.depth.depthCompare ?? CompareFunc.LESS) as GPUCompareFunction,
+      } : undefined,
+      label: desc.label,
+    };
+  }
+
+  async function rebuildPipeline(pipId: number, slot: PipelineSlot): Promise<void> {
+    const shd = shaders.get(slot.desc.shader.id);
+    if (!shd) return;
+
+    const pipelineDesc = buildGpuPipelineDescriptor(slot, shd);
+    try {
+      const newGpuPipeline = await device.createRenderPipelineAsync(pipelineDesc);
+      // Atomic slot swap — handle id is unchanged, existing references stay valid
+      slot.gpu = newGpuPipeline;
+      const pipHandle: SgPipeline = { _brand: "SgPipeline", id: pipId } as SgPipeline;
+      gfx.onPipelineRebuilt?.(pipHandle);
+    } catch (err) {
+      console.warn(`[sokol-ts] Pipeline ${pipId} rebuild failed, keeping old pipeline:`, err);
+      const pipHandle: SgPipeline = { _brand: "SgPipeline", id: pipId } as SgPipeline;
+      gfx.onPipelineRebuildError?.(pipHandle, err);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
 
   const gfx: Gfx = {
     get canvas() { return canvas; },
@@ -225,6 +311,12 @@ export function createGfx(
       });
 
       pipelines.set(h.id, { gpu: gpuPipeline, desc, indexType: desc.indexType ?? IndexType.NONE });
+
+      // Track shader → pipeline dependency for hot-reload rebuilding
+      const deps = shaderPipelineDeps.get(desc.shader.id) ?? new Set<number>();
+      deps.add(h.id);
+      shaderPipelineDeps.set(desc.shader.id, deps);
+
       return h;
     },
 
@@ -238,7 +330,14 @@ export function createGfx(
     },
     destroySampler(smp: SgSampler) { samplers.delete(smp.id); },
     destroyShader(shd: SgShader) { shaders.delete(shd.id); },
-    destroyPipeline(pip: SgPipeline) { pipelines.delete(pip.id); },
+    destroyPipeline(pip: SgPipeline) {
+      const slot = pipelines.get(pip.id);
+      if (slot) {
+        const deps = shaderPipelineDeps.get(slot.desc.shader.id);
+        deps?.delete(pip.id);
+        pipelines.delete(pip.id);
+      }
+    },
 
     updateBuffer(buf: SgBuffer, data: ArrayBufferView) {
       const slot = buffers.get(buf.id);
@@ -348,6 +447,20 @@ export function createGfx(
       lastFrameTime = now;
       _frameCount++;
     },
+
+    async rebuildPipelinesForShader(shader: SgShader): Promise<void> {
+      const deps = shaderPipelineDeps.get(shader.id);
+      if (!deps) return;
+      // Snapshot the set to avoid issues if deps mutate during async iteration
+      for (const pipId of [...deps]) {
+        const slot = pipelines.get(pipId);
+        if (!slot) continue;
+        await rebuildPipeline(pipId, slot);
+      }
+    },
+
+    onPipelineRebuilt: undefined,
+    onPipelineRebuildError: undefined,
   };
 
   return gfx;
