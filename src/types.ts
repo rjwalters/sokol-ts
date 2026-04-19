@@ -75,6 +75,11 @@ export enum LoadAction {
   DONTCARE = 2,
 }
 
+export enum StoreAction {
+  STORE   = 0,
+  DISCARD = 1,
+}
+
 export enum BufferUsage {
   IMMUTABLE = 0,
   DYNAMIC   = 1,
@@ -97,6 +102,7 @@ export interface ImageDesc {
   format?: PixelFormat;
   data?: ArrayBufferView;
   renderTarget?: boolean;
+  sampleCount?: 1 | 4;
   label?: string;
 }
 
@@ -153,6 +159,7 @@ export interface PipelineDesc {
   indexType?: IndexType;
   colors?: ColorTargetDesc[];
   depth?: DepthStencilDesc;
+  multisample?: { count?: 1 | 4 };
   label?: string;
 }
 
@@ -165,13 +172,16 @@ export interface Bindings {
 
 export interface ColorAttachment {
   action?: LoadAction;
+  storeAction?: StoreAction;
   color?: [number, number, number, number];
+  resolveImage?: SgImage;
 }
 
 export interface PassDesc {
   colorAttachments?: ColorAttachment[];
   depthAttachment?: {
     action?: LoadAction;
+    storeAction?: StoreAction;
     value?: number;
   };
   // If omitted, renders to the swapchain
