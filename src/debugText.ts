@@ -1,16 +1,23 @@
 /**
- * debugText.ts — sokol_debugtext equivalent for sokol-ts
+ * Debug text overlay renderer (sokol_debugtext equivalent).
  *
  * Creates a self-contained debug text renderer that overlays pixel-coordinate
- * text onto an existing WebGPU scene. Uses an embedded 8×8 bitmap font atlas
- * and batches all print() calls into a single draw call per draw() invocation.
+ * text onto an existing WebGPU scene. Uses an embedded 8x8 bitmap font atlas
+ * and batches all `print()` calls into a single draw call per `draw()` invocation.
  *
- * Usage:
- *   const dt = createDebugText(gfx);
- *   // in frame():
- *   dt.print(10, 10, "Hello World!");
- *   dt.printf(10, 20, "FPS: %.1f", 1 / gfx.dt);
- *   dt.draw(gfx);   // overlays on existing scene, resets state
+ * @example
+ * ```ts
+ * import { createDebugText } from "sokol-ts";
+ *
+ * const dt = createDebugText(gfx);
+ *
+ * // In your frame callback:
+ * dt.print(10, 10, "Hello World!");
+ * dt.printf(10, 20, "FPS: %.1f", 1 / gfx.dt);
+ * dt.draw(gfx); // overlays on existing scene, resets state
+ * ```
+ *
+ * @module
  */
 
 import {
@@ -31,7 +38,7 @@ export interface DebugTextDesc {
 export interface DebugText {
   /** Print text at pixel position (x, y) with an optional RGBA color override. */
   print(x: number, y: number, text: string, color?: [number, number, number, number]): void;
-  /** printf-style helper — thin wrapper around print(). Supports %s %d %i %f %.Nf %%. */
+  /** printf-style helper — thin wrapper around print(). Supports %s %d %i %f %e %E %g %G %.Nf %%. */
   printf(x: number, y: number, fmt: string, ...args: unknown[]): void;
   /** Set the default color for subsequent print() calls. Components in [0, 1]. */
   setColor(r: number, g: number, b: number, a?: number): void;
@@ -307,8 +314,29 @@ struct VOut { @builtin(position) clip: vec4f, @location(0) uv: vec2f, @location(
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
+/**
+ * Create a {@link DebugText} overlay renderer.
+ *
+ * Allocates GPU resources (font atlas texture, vertex/index buffers, pipeline)
+ * for rendering up to `maxChars` characters per frame. Call {@link DebugText.destroy}
+ * when done to release resources.
+ *
+ * @param gfx - The graphics context to create resources on.
+ * @param desc - Optional configuration (max characters, coordinate origin).
+ * @returns A {@link DebugText} instance.
+ */
 export function createDebugText(gfx: Gfx, desc?: DebugTextDesc): DebugText {
-  const maxChars = desc?.maxChars ?? 8192;
+  // Uint16 index buffer can address vertices 0–65535.  Each character uses
+  // 4 vertices, so the maximum safe character count is floor(65535/4) = 16383.
+  const MAX_CHARS_UINT16 = 16383;
+  const requestedMaxChars = desc?.maxChars ?? 8192;
+  if (requestedMaxChars > MAX_CHARS_UINT16) {
+    console.warn(
+      `debugText: maxChars ${requestedMaxChars} exceeds Uint16 index limit; ` +
+      `clamped to ${MAX_CHARS_UINT16}`,
+    );
+  }
+  const maxChars = Math.min(requestedMaxChars, MAX_CHARS_UINT16);
   const origin   = desc?.origin   ?? "top-left";
   const device   = gfx.device;
 
@@ -566,9 +594,19 @@ export function createDebugText(gfx: Gfx, desc?: DebugTextDesc): DebugText {
       const str = fmt.replace(/%(\.\d+)?([sdifeEgG%])/g, (_m, prec, spec) => {
         if (spec === "%") return "%";
         const val = args[argIdx++];
-        if (spec === "f" || spec === "e" || spec === "E" || spec === "g" || spec === "G") {
+        if (spec === "f") {
           const decimals = prec ? parseInt(prec.slice(1)) : 6;
           return (val as number).toFixed(decimals);
+        }
+        if (spec === "e" || spec === "E") {
+          const decimals = prec ? parseInt(prec.slice(1)) : 6;
+          const s = (val as number).toExponential(decimals);
+          return spec === "E" ? s.toUpperCase() : s;
+        }
+        if (spec === "g" || spec === "G") {
+          const precision = prec ? parseInt(prec.slice(1)) : 6;
+          const s = (val as number).toPrecision(precision || 1);
+          return spec === "G" ? s.toUpperCase() : s;
         }
         if (spec === "d" || spec === "i") return String(Math.trunc(val as number));
         return String(val);
