@@ -33,7 +33,8 @@
     "worktree:return": "./.loom/scripts/worktree-return.sh",
     "check:ci": "npm run lint && npm run build",
     "check:all": "npm run lint && npm run build",
-    "test": "echo 'No tests yet'",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "tsc --noEmit"
   },
   "peerDependencies": {
@@ -42,7 +43,8 @@
   "devDependencies": {
     "@webgpu/types": "^0.1.61",
     "typescript": "^6.0.3",
-    "vite": "^5.2.11"
+    "vite": "^5.2.11",
+    "vitest": "^4.1.4"
   },
   "engines": {
     "node": ">=18"

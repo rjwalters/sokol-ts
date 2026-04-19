@@ -216,11 +216,16 @@ export async function run(desc: AppDesc): Promise<() => void> {
     });
   }
 
-  // Gamepad connection events
+  // Gamepad support — only poll when at least one gamepad is connected
+  let gamepadConnected = false;
+
   listen(window, "gamepadconnected", (e) => {
+    gamepadConnected = true;
     dispatch({ type: AppEventType.GAMEPAD_CONNECTED, gamepadIndex: (e as GamepadEvent).gamepad.index });
   });
   listen(window, "gamepaddisconnected", (e) => {
+    const gamepads = navigator.getGamepads();
+    gamepadConnected = gamepads.some(gp => gp !== null);
     dispatch({ type: AppEventType.GAMEPAD_DISCONNECTED, gamepadIndex: (e as GamepadEvent).gamepad.index });
   });
 
@@ -298,7 +303,9 @@ export async function run(desc: AppDesc): Promise<() => void> {
     lastFrameMs = timestampMs;
     if (desc.eventQueue) flushEvents();
     resize();
-    pollGamepads();
+    if (gamepadConnected) {
+      pollGamepads();
+    }
     desc.preFrame?.(gfx);
     try {
       desc.frame(gfx);

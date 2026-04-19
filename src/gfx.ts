@@ -6,6 +6,9 @@ import {
   FilterMode, WrapMode,
 } from "./types.js";
 
+/** Number of uniform ring-buffer slots to prevent CPU/GPU aliasing. */
+export const NUM_FRAMES_IN_FLIGHT = 2;
+
 // ---------------------------------------------------------------------------
 // Generation-counted handle encoding (matches Sokol's _sg_slot_t strategy)
 // ---------------------------------------------------------------------------
@@ -147,40 +150,72 @@ export function createGfx(
   let encoder: GPUCommandEncoder | null = null;
   let passEncoder: GPURenderPassEncoder | null = null;
   let currentPipeline: PipelineSlot | null = null;
+  let currentPipelineId = 0;
   let frameTime = 0;
   let lastFrameTime = 0;
   let _frameCount = 0;
   let uniformOffset = 0;
-  let uniformBuffer: GPUBuffer | null = null;
-  let uniformBindGroup: GPUBindGroup | null = null;
   let boundVertexBuffers: BufferSlot[] = [];
   let boundIndexBuffer: BufferSlot | null = null;
   let _frameStats: DrawStats = { drawCalls: 0, totalElements: 0, indirectDrawCalls: 0 };
 
-  const UNIFORM_BUFFER_SIZE = 65536; // 64KB uniform staging
+  // Texture/sampler bind group cache (group 1): keyed on "pipelineId:img1,img2,...:smp1,smp2,..."
+  const textureSamplerBindGroupCache = new Map<string, GPUBindGroup>();
+
+  const UNIFORM_BUFFER_SIZE = 65536; // 64KB uniform staging per ring slot
   if (UNIFORM_BUFFER_SIZE > device.limits.maxUniformBufferBindingSize) {
     throw new Error(
       `UNIFORM_BUFFER_SIZE (${UNIFORM_BUFFER_SIZE}) exceeds device limit maxUniformBufferBindingSize (${device.limits.maxUniformBufferBindingSize})`
     );
   }
+  let uniformFrameIndex = 0;
 
-  function ensureUniformBuffer() {
-    if (!uniformBuffer) {
-      uniformBuffer = device.createBuffer({
-        size: UNIFORM_BUFFER_SIZE,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-    }
-    return uniformBuffer;
+  // Shared bind group layout for the uniform ring buffers (group 0, binding 0, dynamic offset)
+  const uniformBindGroupLayout = device.createBindGroupLayout({
+    entries: [{
+      binding: 0,
+      visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+      buffer: { type: "uniform", hasDynamicOffset: true },
+    }],
+  });
+
+  // Allocate NUM_FRAMES_IN_FLIGHT uniform buffers and one bind group per slot up front
+  const uniformBuffers: GPUBuffer[] = [];
+  const uniformBindGroups: GPUBindGroup[] = [];
+  for (let i = 0; i < NUM_FRAMES_IN_FLIGHT; i++) {
+    const buf = device.createBuffer({
+      size: UNIFORM_BUFFER_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      label: `uniform_ring_${i}`,
+    });
+    uniformBuffers.push(buf);
+    uniformBindGroups.push(device.createBindGroup({
+      layout: uniformBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: buf, size: UNIFORM_BUFFER_SIZE } }],
+      label: `uniform_bind_group_${i}`,
+    }));
+  }
+
+  function currentUniformBuffer() {
+    return uniformBuffers[uniformFrameIndex];
+  }
+
+  function currentUniformBindGroup() {
+    return uniformBindGroups[uniformFrameIndex];
   }
 
   function gpuBufferUsage(usage: BufferUsage | undefined): number {
-    const base = GPUBufferUsage.COPY_DST;
     switch (usage) {
+      case BufferUsage.IMMUTABLE:
+        // No COPY_DST — data is supplied only at creation via mappedAtCreation
+        return GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
+      case BufferUsage.DYNAMIC:
+      case BufferUsage.STREAM:
+        return GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
       case BufferUsage.INDIRECT:
-        return base | GPUBufferUsage.INDIRECT;
+        return GPUBufferUsage.COPY_DST | GPUBufferUsage.INDIRECT;
       default:
-        return base | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
+        return GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
     }
   }
 
@@ -212,6 +247,8 @@ export function createGfx(
       const newGpuPipeline = await device.createRenderPipelineAsync(rebuiltDesc);
       // Atomic slot swap -- handle id is unchanged, existing references stay valid
       slot.gpu = newGpuPipeline;
+      // Invalidate cached bind groups since the pipeline object changed
+      invalidateCachesForPipeline(pipId);
       const pipHandle: SgPipeline = { _brand: "SgPipeline", id: pipId } as SgPipeline;
       gfx.onPipelineRebuilt?.(pipHandle);
     } catch (err) {
@@ -222,6 +259,31 @@ export function createGfx(
   }
 
   // ---------------------------------------------------------------------------
+
+  // Cache invalidation helpers
+  function invalidateTextureSamplerCacheForResource(resourceId: number, kind: "img" | "smp") {
+    // Cache keys have the form "pipelineId:img1,img2,...:smp1,smp2,..."
+    // We need to find entries that reference this resource in the appropriate segment.
+    for (const key of textureSamplerBindGroupCache.keys()) {
+      const parts = key.split(":");
+      const segment = kind === "img" ? parts[1] : parts[2];
+      if (segment) {
+        const ids = segment.split(",");
+        if (ids.includes(String(resourceId))) {
+          textureSamplerBindGroupCache.delete(key);
+        }
+      }
+    }
+  }
+
+  function invalidateCachesForPipeline(pipelineId: number) {
+    const prefix = `${pipelineId}:`;
+    for (const key of textureSamplerBindGroupCache.keys()) {
+      if (key.startsWith(prefix)) {
+        textureSamplerBindGroupCache.delete(key);
+      }
+    }
+  }
 
   const gfx: Gfx = {
     get canvas() { return canvas; },
@@ -237,9 +299,10 @@ export function createGfx(
 
     makeBuffer(desc: BufferDesc): SgBuffer {
       const id = bufferPool.alloc();
-      const size = desc.data ? desc.data.byteLength : (desc.size ?? 256);
+      const rawSize = desc.data ? desc.data.byteLength : (desc.size ?? 256);
+      const alignedSize = Math.max(4, Math.ceil(rawSize / 4) * 4);
       const gpu = device.createBuffer({
-        size,
+        size: alignedSize,
         usage: gpuBufferUsage(desc.usage),
         mappedAtCreation: !!desc.data,
         label: desc.label,
@@ -369,14 +432,8 @@ export function createGfx(
 
       const bindGroupLayouts: GPUBindGroupLayout[] = [];
 
-      // Group 0: uniform buffer (always present)
-      bindGroupLayouts.push(device.createBindGroupLayout({
-        entries: [{
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform", hasDynamicOffset: true },
-        }],
-      }));
+      // Group 0: uniform buffer (always present) — reuse the shared layout
+      bindGroupLayouts.push(uniformBindGroupLayout);
 
       // Group 1: textures + samplers (if any)
       // Texture bindings occupy locations 0..images-1;
@@ -512,10 +569,16 @@ export function createGfx(
       if (slot) slot.gpu.destroy();
     },
     destroyImage(img: SgImage) {
+      // Invalidate any cached texture/sampler bind groups referencing this image
+      invalidateTextureSamplerCacheForResource(img.id, "img");
       const slot = imagePool.free(img.id);
       if (slot) slot.texture.destroy();
     },
-    destroySampler(smp: SgSampler) { samplerPool.free(smp.id); },
+    destroySampler(smp: SgSampler) {
+      // Invalidate any cached texture/sampler bind groups referencing this sampler
+      invalidateTextureSamplerCacheForResource(smp.id, "smp");
+      samplerPool.free(smp.id);
+    },
     destroyShader(shd: SgShader) { shaderPool.free(shd.id); },
     destroyPipeline(pip: SgPipeline) {
       const slot = pipelinePool.get(pip.id);
@@ -526,6 +589,8 @@ export function createGfx(
         if (deps && deps.size === 0) {
           shaderPipelineDeps.delete(slot.desc.shader.id);
         }
+        // Invalidate cached bind groups for this pipeline
+        invalidateCachesForPipeline(pip.id);
       }
       pipelinePool.free(pip.id);
     },
@@ -541,10 +606,23 @@ export function createGfx(
       }
     },
 
-    updateBuffer(buf: SgBuffer, data: ArrayBufferView) {
+    updateBuffer(buf: SgBuffer, data: ArrayBufferView, dstOffset = 0) {
       const slot = bufferPool.get(buf.id);
       if (!slot) throw new Error("Invalid or stale buffer handle");
-      device.queue.writeBuffer(slot.gpu, 0, data.buffer, data.byteOffset, data.byteLength);
+      if (slot.desc.usage === BufferUsage.IMMUTABLE) {
+        throw new Error("Cannot update an IMMUTABLE buffer");
+      }
+      const writeBytes = Math.ceil(data.byteLength / 4) * 4;
+      if (writeBytes === data.byteLength) {
+        // Data is already 4-byte aligned, no padding needed
+        device.queue.writeBuffer(slot.gpu, dstOffset, data.buffer, data.byteOffset, writeBytes);
+      } else {
+        // writeBytes exceeds data.byteLength; copy into a zero-padded buffer
+        // to avoid reading past the end of the source ArrayBuffer
+        const padded = new Uint8Array(writeBytes);
+        padded.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+        device.queue.writeBuffer(slot.gpu, dstOffset, padded.buffer, 0, writeBytes);
+      }
     },
 
     writeImageBitmap(img: SgImage, bitmap: ImageBitmap) {
@@ -667,6 +745,7 @@ export function createGfx(
       if (!slot || !passEncoder) throw new Error("Invalid pipeline or no active pass");
       passEncoder.setPipeline(slot.gpu);
       currentPipeline = slot;
+      currentPipelineId = pip.id;
     },
 
     applyBindings(bind: Bindings) {
@@ -692,46 +771,63 @@ export function createGfx(
         boundIndexBuffer = null;
       }
 
-      // Textures + samplers — bind group 1
+      // Textures + samplers — bind group 1 (cached)
       const imageHandles = bind.images ?? [];
       const samplerHandles = bind.samplers ?? [];
       if (imageHandles.length > 0 || samplerHandles.length > 0) {
         if (!currentPipeline) throw new Error("No active pipeline — call applyPipeline before applyBindings");
-        const entries: GPUBindGroupEntry[] = [];
-        let binding = 0;
-        for (const imgHandle of imageHandles) {
-          const img = imagePool.get(imgHandle.id);
-          if (!img) throw new Error(`Invalid image handle at texture binding ${binding}`);
-          entries.push({ binding: binding++, resource: img.view });
+
+        // Build cache key from pipeline id + image ids + sampler ids
+        const imgIds = imageHandles.map(h => h.id).join(",");
+        const smpIds = samplerHandles.map(h => h.id).join(",");
+        const cacheKey = `${currentPipelineId}:${imgIds}:${smpIds}`;
+
+        let bg = textureSamplerBindGroupCache.get(cacheKey);
+        if (!bg) {
+          const entries: GPUBindGroupEntry[] = [];
+          let binding = 0;
+          for (const imgHandle of imageHandles) {
+            const img = imagePool.get(imgHandle.id);
+            if (!img) throw new Error(`Invalid image handle at texture binding ${binding}`);
+            entries.push({ binding: binding++, resource: img.view });
+          }
+          for (const smpHandle of samplerHandles) {
+            const smp = samplerPool.get(smpHandle.id);
+            if (!smp) throw new Error(`Invalid sampler handle at sampler binding ${binding}`);
+            entries.push({ binding: binding++, resource: smp.gpu });
+          }
+          bg = device.createBindGroup({
+            layout: currentPipeline.gpu.getBindGroupLayout(1),
+            entries,
+          });
+          textureSamplerBindGroupCache.set(cacheKey, bg);
         }
-        for (const smpHandle of samplerHandles) {
-          const smp = samplerPool.get(smpHandle.id);
-          if (!smp) throw new Error(`Invalid sampler handle at sampler binding ${binding}`);
-          entries.push({ binding: binding++, resource: smp.gpu });
-        }
-        const bg = device.createBindGroup({
-          layout: currentPipeline.gpu.getBindGroupLayout(1),
-          entries,
-        });
         passEncoder.setBindGroup(1, bg);
       }
     },
 
     applyUniforms(data: ArrayBufferView) {
       if (!passEncoder) throw new Error("No active pass");
-      const ub = ensureUniformBuffer();
 
       // Align to 256 bytes (WebGPU requirement for dynamic offsets)
       const alignedOffset = Math.ceil(uniformOffset / 256) * 256;
+      const slotSize = Math.max(data.byteLength, 256);
+
+      // Overflow detection: ensure we don't write past the end of the ring slot
+      if (alignedOffset + slotSize > UNIFORM_BUFFER_SIZE) {
+        throw new Error(
+          `Uniform buffer overflow: offset ${alignedOffset} + ${slotSize} exceeds UNIFORM_BUFFER_SIZE (${UNIFORM_BUFFER_SIZE}). ` +
+          `Too many applyUniforms calls in a single pass.`
+        );
+      }
+
+      const ub = currentUniformBuffer();
       device.queue.writeBuffer(ub, alignedOffset, data.buffer, data.byteOffset, data.byteLength);
 
-      uniformBindGroup = device.createBindGroup({
-        layout: currentPipeline!.gpu.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: { buffer: ub, size: Math.max(data.byteLength, 256) } }],
-      });
-      passEncoder.setBindGroup(0, uniformBindGroup, [alignedOffset]);
+      // Use the pre-created bind group for this ring slot; supply the dynamic offset
+      passEncoder.setBindGroup(0, currentUniformBindGroup(), [alignedOffset]);
 
-      uniformOffset = alignedOffset + Math.max(data.byteLength, 256);
+      uniformOffset = alignedOffset + slotSize;
     },
 
     draw(baseElement: number, numElements?: number, numInstances = 1) {
@@ -811,8 +907,11 @@ export function createGfx(
         encoder = null;
       }
       currentPipeline = null;
-      uniformBindGroup = null;
+      currentPipelineId = 0;
       uniformOffset = 0;
+
+      // Advance the ring buffer index so the next frame writes to a different slot
+      uniformFrameIndex = (uniformFrameIndex + 1) % NUM_FRAMES_IN_FLIGHT;
 
       const now = performance.now();
       frameTime = (now - lastFrameTime) / 1000;
