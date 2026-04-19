@@ -145,6 +145,41 @@ export enum WrapMode {
   MIRROR = "mirror-repeat",
 }
 
+export enum BlendFactor {
+  ZERO = "zero",
+  ONE = "one",
+  SRC_ALPHA = "src-alpha",
+  ONE_MINUS_SRC_ALPHA = "one-minus-src-alpha",
+  DST_ALPHA = "dst-alpha",
+  ONE_MINUS_DST_ALPHA = "one-minus-dst-alpha",
+  SRC_COLOR = "src",
+  DST_COLOR = "dst",
+  ONE_MINUS_SRC_COLOR = "one-minus-src",
+  ONE_MINUS_DST_COLOR = "one-minus-dst",
+  SRC_ALPHA_SATURATED = "src-alpha-saturated",
+  CONSTANT = "constant",
+  ONE_MINUS_CONSTANT = "one-minus-constant",
+}
+
+export enum BlendOp {
+  ADD = "add",
+  SUBTRACT = "subtract",
+  REVERSE_SUBTRACT = "reverse-subtract",
+  MIN = "min",
+  MAX = "max",
+}
+
+export enum StencilOp {
+  KEEP = "keep",
+  ZERO = "zero",
+  REPLACE = "replace",
+  INVERT = "invert",
+  INCREMENT_CLAMP = "increment-clamp",
+  DECREMENT_CLAMP = "decrement-clamp",
+  INCREMENT_WRAP = "increment-wrap",
+  DECREMENT_WRAP = "decrement-wrap",
+}
+
 /**
  * Texture pixel formats.
  *
@@ -316,12 +351,29 @@ export interface ShaderDesc {
   label?: string;
 }
 
+export interface BlendComponentDesc {
+  srcFactor?: BlendFactor;
+  dstFactor?: BlendFactor;
+  operation?: BlendOp;
+}
+
 /** Describes a single color target in a pipeline. */
 export interface ColorTargetDesc {
   /** Pixel format of the color target. Default: swapchain format. */
   format?: PixelFormat;
   /** Enable alpha blending on this target. Default: false. */
   blendEnabled?: boolean;
+  colorBlend?: BlendComponentDesc;
+  alphaBlend?: BlendComponentDesc;
+  /** Bitmask of GPUColorWrite flags. Defaults to GPUColorWrite.ALL (0xF). */
+  writeMask?: number;
+}
+
+export interface StencilFaceDesc {
+  compare?: CompareFunc;
+  failOp?: StencilOp;
+  depthFailOp?: StencilOp;
+  passOp?: StencilOp;
 }
 
 /** Describes the depth/stencil state for a pipeline. */
@@ -332,6 +384,18 @@ export interface DepthStencilDesc {
   depthWrite?: boolean;
   /** Depth comparison function. Default: {@link CompareFunc.LESS}. */
   depthCompare?: CompareFunc;
+  stencilFront?: StencilFaceDesc;
+  stencilBack?: StencilFaceDesc;
+  /** Default 0xFF */
+  stencilReadMask?: number;
+  /** Default 0xFF */
+  stencilWriteMask?: number;
+}
+
+export interface MsaaDesc {
+  /** Sample count. Must be 1 or 4 in WebGPU (implementations may support 2, 8, 16). Default: 4. */
+  count?: 1 | 2 | 4 | 8 | 16;
+  alphaToCoverage?: boolean;
 }
 
 /** Descriptor for creating a render pipeline via {@link Gfx.makePipeline}. */
@@ -360,7 +424,7 @@ export interface PipelineDesc {
   /** Number of sampler bindings in bind group 1 (locations images..images+samplerCount-1). Default: 0. */
   samplerCount?: number;
   /** MSAA multisample configuration. */
-  multisample?: { count?: 1 | 4 };
+  multisample?: MsaaDesc;
   /** Debug label for GPU debugging tools. */
   label?: string;
 }
@@ -410,6 +474,8 @@ export interface PassDesc {
     colorImages: SgImage[];
     /** Depth image to render into. */
     depthImage?: SgImage;
+    /** Resolve targets for MSAA color images (one per colorImage). */
+    resolveImages?: SgImage[];
   };
 }
 
@@ -621,6 +687,12 @@ export interface Gfx {
    * @param data - Uniform data to upload.
    */
   applyUniforms(data: ArrayBufferView): void;
+
+  /**
+   * Set the stencil reference value for subsequent draw commands.
+   * @param ref - The stencil reference value.
+   */
+  applyStencilRef(ref: number): void;
 
   /**
    * Issue a draw call.

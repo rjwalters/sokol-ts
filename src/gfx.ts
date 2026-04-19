@@ -14,7 +14,7 @@ import {
   type BufferDesc, type ImageDesc, type SamplerDesc, type ShaderDesc, type PipelineDesc,
   type Bindings, type PassDesc, type Gfx, type Handle, type DrawStats, type ShaderRecompileResult,
   BufferUsage, IndexType, LoadAction, StoreAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
-  FilterMode, WrapMode,
+  FilterMode, WrapMode, BlendFactor, BlendOp, StencilOp,
 } from "./types.js";
 
 /** Number of uniform ring-buffer slots to prevent CPU/GPU aliasing. */
@@ -167,6 +167,7 @@ export function createGfx(
   const samplerPool  = new Pool<SamplerSlot>(64);
   const shaderPool   = new Pool<ShaderSlot>(64);
   const pipelinePool = new Pool<PipelineSlot>(64);
+  const pipelineCache = new Map<string, GPURenderPipeline>();
   // shader handle id -> set of pipeline handle ids that reference it
   const shaderPipelineDeps = new Map<number, Set<number>>();
 
@@ -228,6 +229,21 @@ export function createGfx(
     return uniformBindGroups[uniformFrameIndex];
   }
 
+  function pipelineKey(desc: PipelineDesc): string {
+    return JSON.stringify({
+      shader: desc.shader.id,
+      layout: desc.layout,
+      primitive: desc.primitive,
+      cullMode: desc.cullMode,
+      indexType: desc.indexType,
+      colors: desc.colors,
+      depth: desc.depth,
+      images: desc.images,
+      samplerCount: desc.samplerCount,
+      multisample: desc.multisample,
+    });
+  }
+
   function gpuBufferUsage(usage: BufferUsage | undefined): number {
     switch (usage) {
       case BufferUsage.IMMUTABLE:
@@ -253,6 +269,10 @@ export function createGfx(
   async function rebuildPipeline(pipId: number, slot: PipelineSlot): Promise<void> {
     const shd = shaderPool.get(slot.desc.shader.id);
     if (!shd) return;
+
+    // Invalidate the pipeline cache — the shader modules have changed,
+    // so any cached GPU pipeline keyed against the old shader is stale.
+    pipelineCache.clear();
 
     // Clone the stored descriptor and replace only the shader modules
     const rebuiltDesc: GPURenderPipelineDescriptor = {
@@ -449,9 +469,18 @@ export function createGfx(
       const colorTargets: GPUColorTargetState[] = (desc.colors ?? [{}]).map(c => ({
         format: (c.format as GPUTextureFormat) ?? format,
         blend: c.blendEnabled ? {
-          color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
-          alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+          color: {
+            srcFactor: (c.colorBlend?.srcFactor ?? BlendFactor.SRC_ALPHA) as GPUBlendFactor,
+            dstFactor: (c.colorBlend?.dstFactor ?? BlendFactor.ONE_MINUS_SRC_ALPHA) as GPUBlendFactor,
+            operation: (c.colorBlend?.operation ?? BlendOp.ADD) as GPUBlendOperation,
+          },
+          alpha: {
+            srcFactor: (c.alphaBlend?.srcFactor ?? BlendFactor.ONE) as GPUBlendFactor,
+            dstFactor: (c.alphaBlend?.dstFactor ?? BlendFactor.ONE_MINUS_SRC_ALPHA) as GPUBlendFactor,
+            operation: (c.alphaBlend?.operation ?? BlendOp.ADD) as GPUBlendOperation,
+          },
         } as GPUBlendState : undefined,
+        writeMask: c.writeMask ?? GPUColorWrite.ALL,
       }));
 
       const bindGroupLayouts: GPUBindGroupLayout[] = [];
@@ -487,6 +516,17 @@ export function createGfx(
         bindGroupLayouts,
       });
 
+      // Build stencil face descriptors
+      function buildStencilFace(face: NonNullable<typeof desc.depth>["stencilFront"]): GPUStencilFaceState | undefined {
+        if (!face) return undefined;
+        return {
+          compare: (face.compare ?? CompareFunc.ALWAYS) as GPUCompareFunction,
+          failOp: (face.failOp ?? StencilOp.KEEP) as GPUStencilOperation,
+          depthFailOp: (face.depthFailOp ?? StencilOp.KEEP) as GPUStencilOperation,
+          passOp: (face.passOp ?? StencilOp.KEEP) as GPUStencilOperation,
+        };
+      }
+
       const gpuPipelineDesc: GPURenderPipelineDescriptor = {
         layout: pipelineLayout,
         vertex: {
@@ -510,12 +550,24 @@ export function createGfx(
           format: (desc.depth.format ?? PixelFormat.DEPTH24_STENCIL8) as GPUTextureFormat,
           depthWriteEnabled: desc.depth.depthWrite ?? true,
           depthCompare: (desc.depth.depthCompare ?? CompareFunc.LESS) as GPUCompareFunction,
+          stencilFront: buildStencilFace(desc.depth.stencilFront),
+          stencilBack: buildStencilFace(desc.depth.stencilBack),
+          stencilReadMask: desc.depth.stencilReadMask ?? 0xFF,
+          stencilWriteMask: desc.depth.stencilWriteMask ?? 0xFF,
         } : undefined,
-        multisample: { count: desc.multisample?.count ?? 1 },
+        multisample: desc.multisample ? {
+          count: desc.multisample.count ?? 4,
+          alphaToCoverageEnabled: desc.multisample.alphaToCoverage ?? false,
+        } : undefined,
         label: desc.label,
       };
 
-      const gpuPipeline = device.createRenderPipeline(gpuPipelineDesc);
+      const key = pipelineKey(desc);
+      let gpuPipeline = pipelineCache.get(key);
+      if (!gpuPipeline) {
+        gpuPipeline = device.createRenderPipeline(gpuPipelineDesc);
+        pipelineCache.set(key, gpuPipeline);
+      }
 
       pipelinePool.set(id, { gpu: gpuPipeline, desc, gpuDesc: gpuPipelineDesc, indexType: desc.indexType ?? IndexType.NONE });
 
@@ -607,6 +659,10 @@ export function createGfx(
     destroyPipeline(pip: SgPipeline) {
       const slot = pipelinePool.get(pip.id);
       if (slot) {
+        // Remove cached GPU pipeline for this descriptor so it won't be reused stale
+        const key = pipelineKey(slot.desc);
+        pipelineCache.delete(key);
+
         const deps = shaderPipelineDeps.get(slot.desc.shader.id);
         deps?.delete(pip.id);
         // Prune empty dep sets to avoid memory leaks
@@ -701,12 +757,15 @@ export function createGfx(
       const colorAttachments: GPURenderPassColorAttachment[] = [];
 
       if (desc?.offscreen) {
+        const resolveImages = desc.offscreen.resolveImages;
         for (let i = 0; i < desc.offscreen.colorImages.length; i++) {
           const img = imagePool.get(desc.offscreen.colorImages[i].id);
           if (!img) throw new Error("Invalid offscreen color image");
           const ca = desc.colorAttachments?.[i];
           const loadOp = resolveLoadOp(ca?.action);
-          const resolveSlot = ca?.resolveImage ? imagePool.get(ca.resolveImage.id) : undefined;
+          // Per-attachment resolveImage takes priority, then offscreen-level resolveImages
+          const resolveImgHandle = ca?.resolveImage ?? (resolveImages?.[i] ? resolveImages[i] : undefined);
+          const resolveSlot = resolveImgHandle ? imagePool.get(resolveImgHandle.id) : undefined;
           colorAttachments.push({
             view: img.view,
             resolveTarget: resolveSlot?.view,
@@ -852,6 +911,11 @@ export function createGfx(
       passEncoder.setBindGroup(0, currentUniformBindGroup(), [alignedOffset]);
 
       uniformOffset = alignedOffset + slotSize;
+    },
+
+    applyStencilRef(ref: number) {
+      if (!passEncoder) throw new Error("No active pass");
+      passEncoder.setStencilReference(ref);
     },
 
     draw(baseElement: number, numElements?: number, numInstances = 1) {
