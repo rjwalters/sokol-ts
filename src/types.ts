@@ -255,7 +255,7 @@ export interface Gfx {
   destroyPipeline(pip: SgPipeline): void;
 
   isValid(handle: Handle): boolean;
-  updateBuffer(buf: SgBuffer, data: ArrayBufferView): void;
+  updateBuffer(buf: SgBuffer, data: ArrayBufferView, dstOffset?: number): void;
   writeImageBitmap(img: SgImage, bitmap: ImageBitmap): void;
 
   beginPass(desc?: PassDesc): void;

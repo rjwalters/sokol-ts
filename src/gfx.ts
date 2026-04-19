@@ -201,12 +201,17 @@ export function createGfx(
   }
 
   function gpuBufferUsage(usage: BufferUsage | undefined): number {
-    const base = GPUBufferUsage.COPY_DST;
     switch (usage) {
+      case BufferUsage.IMMUTABLE:
+        // No COPY_DST — data is supplied only at creation via mappedAtCreation
+        return GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
+      case BufferUsage.DYNAMIC:
+      case BufferUsage.STREAM:
+        return GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
       case BufferUsage.INDIRECT:
-        return base | GPUBufferUsage.INDIRECT;
+        return GPUBufferUsage.COPY_DST | GPUBufferUsage.INDIRECT;
       default:
-        return base | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
+        return GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
     }
   }
 
@@ -263,9 +268,10 @@ export function createGfx(
 
     makeBuffer(desc: BufferDesc): SgBuffer {
       const id = bufferPool.alloc();
-      const size = desc.data ? desc.data.byteLength : (desc.size ?? 256);
+      const rawSize = desc.data ? desc.data.byteLength : (desc.size ?? 256);
+      const alignedSize = Math.max(4, Math.ceil(rawSize / 4) * 4);
       const gpu = device.createBuffer({
-        size,
+        size: alignedSize,
         usage: gpuBufferUsage(desc.usage),
         mappedAtCreation: !!desc.data,
         label: desc.label,
@@ -561,10 +567,23 @@ export function createGfx(
       }
     },
 
-    updateBuffer(buf: SgBuffer, data: ArrayBufferView) {
+    updateBuffer(buf: SgBuffer, data: ArrayBufferView, dstOffset = 0) {
       const slot = bufferPool.get(buf.id);
       if (!slot) throw new Error("Invalid or stale buffer handle");
-      device.queue.writeBuffer(slot.gpu, 0, data.buffer, data.byteOffset, data.byteLength);
+      if (slot.desc.usage === BufferUsage.IMMUTABLE) {
+        throw new Error("Cannot update an IMMUTABLE buffer");
+      }
+      const writeBytes = Math.ceil(data.byteLength / 4) * 4;
+      if (writeBytes === data.byteLength) {
+        // Data is already 4-byte aligned, no padding needed
+        device.queue.writeBuffer(slot.gpu, dstOffset, data.buffer, data.byteOffset, writeBytes);
+      } else {
+        // writeBytes exceeds data.byteLength; copy into a zero-padded buffer
+        // to avoid reading past the end of the source ArrayBuffer
+        const padded = new Uint8Array(writeBytes);
+        padded.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+        device.queue.writeBuffer(slot.gpu, dstOffset, padded.buffer, 0, writeBytes);
+      }
     },
 
     writeImageBitmap(img: SgImage, bitmap: ImageBitmap) {
