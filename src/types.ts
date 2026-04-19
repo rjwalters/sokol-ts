@@ -187,6 +187,7 @@ export interface AppDesc {
   normalizedCoords?: boolean;
   pointerLock?: boolean;
   eventQueue?: boolean;
+  dragDrop?: boolean;
 }
 
 export interface Gfx {
@@ -256,7 +257,7 @@ export enum AppEventType {
   FOCUS = "focus",
   BLUR = "blur",
   POINTER_LOCK = "pointerlockchange",
-  POINTER_UNLOCK = "pointerlockerror",
+  POINTER_UNLOCK = "pointer_unlock",
   GAMEPAD_DOWN = "gamepad_down",
   GAMEPAD_UP = "gamepad_up",
   GAMEPAD_AXIS = "gamepad_axis",

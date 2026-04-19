@@ -112,13 +112,20 @@ export async function run(desc: AppDesc): Promise<() => void> {
   listen(window, "blur", () => dispatch({ type: AppEventType.BLUR }));
 
   // Touch events
+  function touchPos(t: Touch): { x: number; y: number } {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (t.clientX - rect.left) * pixelRatio,
+      y: (t.clientY - rect.top) * pixelRatio,
+    };
+  }
+
   listen(canvas, "touchstart", (e) => {
     e.preventDefault();
     dispatch({
       type: AppEventType.TOUCH_START,
       touches: Array.from((e as TouchEvent).touches).map(t => {
-        const x = t.clientX * pixelRatio;
-        const y = t.clientY * pixelRatio;
+        const { x, y } = touchPos(t);
         return desc.normalizedCoords
           ? { id: t.identifier, x, y, normX: normX(x), normY: normY(y) }
           : { id: t.identifier, x, y };
@@ -130,8 +137,7 @@ export async function run(desc: AppDesc): Promise<() => void> {
     dispatch({
       type: AppEventType.TOUCH_MOVE,
       touches: Array.from((e as TouchEvent).touches).map(t => {
-        const x = t.clientX * pixelRatio;
-        const y = t.clientY * pixelRatio;
+        const { x, y } = touchPos(t);
         return desc.normalizedCoords
           ? { id: t.identifier, x, y, normX: normX(x), normY: normY(y) }
           : { id: t.identifier, x, y };
@@ -142,8 +148,7 @@ export async function run(desc: AppDesc): Promise<() => void> {
     dispatch({
       type: AppEventType.TOUCH_END,
       touches: Array.from((e as TouchEvent).changedTouches).map(t => {
-        const x = t.clientX * pixelRatio;
-        const y = t.clientY * pixelRatio;
+        const { x, y } = touchPos(t);
         return desc.normalizedCoords
           ? { id: t.identifier, x, y, normX: normX(x), normY: normY(y) }
           : { id: t.identifier, x, y };
@@ -162,19 +167,21 @@ export async function run(desc: AppDesc): Promise<() => void> {
     });
   }
 
-  // Drag and drop events
-  listen(canvas, "dragover", (e) => {
-    e.preventDefault();
-    dispatch({ type: AppEventType.DRAG_OVER });
-  });
-  listen(canvas, "dragleave", (e) => {
-    void e;
-    dispatch({ type: AppEventType.DRAG_LEAVE });
-  });
-  listen(canvas, "drop", (e) => {
-    e.preventDefault();
-    dispatch({ type: AppEventType.DROP, files: (e as DragEvent).dataTransfer?.files });
-  });
+  // Drag and drop events (opt-in via desc.dragDrop)
+  if (desc.dragDrop) {
+    listen(canvas, "dragover", (e) => {
+      e.preventDefault();
+      dispatch({ type: AppEventType.DRAG_OVER });
+    });
+    listen(canvas, "dragleave", (e) => {
+      void e;
+      dispatch({ type: AppEventType.DRAG_LEAVE });
+    });
+    listen(canvas, "drop", (e) => {
+      e.preventDefault();
+      dispatch({ type: AppEventType.DROP, files: (e as DragEvent).dataTransfer?.files });
+    });
+  }
 
   // Gamepad connection events
   listen(window, "gamepadconnected", (e) => {
