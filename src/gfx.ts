@@ -151,13 +151,25 @@ export function createGfx(
 
     makeSampler(desc: SamplerDesc): SgSampler {
       const h = handle<SgSampler>("SgSampler");
+      const minFilter = desc.minFilter ?? FilterMode.NEAREST;
+      const magFilter = desc.magFilter ?? FilterMode.NEAREST;
+      const mipmapFilter = desc.mipmapFilter ?? FilterMode.NEAREST;
+      // WebGPU requires all three filters to be "linear" when maxAnisotropy > 1;
+      // silently clamp to 1 when they are not (mirrors Sokol's hint semantics).
+      const allLinear = minFilter === FilterMode.LINEAR
+        && magFilter === FilterMode.LINEAR
+        && mipmapFilter === FilterMode.LINEAR;
+      const maxAnisotropy = allLinear ? Math.max(1, Math.min(16, desc.maxAnisotropy ?? 1)) : 1;
       const gpu = device.createSampler({
-        minFilter: desc.minFilter ?? FilterMode.NEAREST,
-        magFilter: desc.magFilter ?? FilterMode.NEAREST,
-        mipmapFilter: desc.mipmapFilter ?? FilterMode.NEAREST,
+        minFilter,
+        magFilter,
+        mipmapFilter,
         addressModeU: desc.wrapU ?? WrapMode.REPEAT,
         addressModeV: desc.wrapV ?? WrapMode.REPEAT,
         compare: desc.compare as GPUCompareFunction | undefined,
+        maxAnisotropy,
+        lodMinClamp: desc.lodMinClamp ?? 0,
+        lodMaxClamp: desc.lodMaxClamp ?? 32,
         label: desc.label,
       });
       samplers.set(h.id, { gpu });
@@ -238,7 +250,28 @@ export function createGfx(
       }));
 
       // Group 1: textures + samplers (if any)
-      // Users can extend this via custom bind group layouts later
+      // Texture bindings occupy locations 0..images-1;
+      // sampler bindings occupy locations images..images+samplerCount-1.
+      const imageCount = desc.images ?? 0;
+      const samplerCount = desc.samplerCount ?? 0;
+      if (imageCount > 0 || samplerCount > 0) {
+        const group1Entries: GPUBindGroupLayoutEntry[] = [];
+        for (let i = 0; i < imageCount; i++) {
+          group1Entries.push({
+            binding: i,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: {},
+          });
+        }
+        for (let i = 0; i < samplerCount; i++) {
+          group1Entries.push({
+            binding: imageCount + i,
+            visibility: GPUShaderStage.FRAGMENT,
+            sampler: {},
+          });
+        }
+        bindGroupLayouts.push(device.createBindGroupLayout({ entries: group1Entries }));
+      }
 
       const pipelineLayout = device.createPipelineLayout({
         bindGroupLayouts,
@@ -443,12 +476,16 @@ export function createGfx(
     applyBindings(bind: Bindings) {
       if (!passEncoder) throw new Error("No active pass");
       boundVertexBuffers = [];
+
+      // Vertex buffers
       for (let i = 0; i < bind.vertexBuffers.length; i++) {
         const buf = buffers.get(bind.vertexBuffers[i].id);
         if (!buf) throw new Error(`Invalid vertex buffer at index ${i}`);
         passEncoder.setVertexBuffer(i, buf.gpu);
         boundVertexBuffers.push(buf);
       }
+
+      // Index buffer
       if (bind.indexBuffer) {
         const buf = buffers.get(bind.indexBuffer.id);
         if (!buf) throw new Error("Invalid index buffer");
@@ -457,6 +494,30 @@ export function createGfx(
         boundIndexBuffer = buf;
       } else {
         boundIndexBuffer = null;
+      }
+
+      // Textures + samplers — bind group 1
+      const imageHandles = bind.images ?? [];
+      const samplerHandles = bind.samplers ?? [];
+      if (imageHandles.length > 0 || samplerHandles.length > 0) {
+        if (!currentPipeline) throw new Error("No active pipeline — call applyPipeline before applyBindings");
+        const entries: GPUBindGroupEntry[] = [];
+        let binding = 0;
+        for (const imgHandle of imageHandles) {
+          const img = images.get(imgHandle.id);
+          if (!img) throw new Error(`Invalid image handle at texture binding ${binding}`);
+          entries.push({ binding: binding++, resource: img.view });
+        }
+        for (const smpHandle of samplerHandles) {
+          const smp = samplers.get(smpHandle.id);
+          if (!smp) throw new Error(`Invalid sampler handle at sampler binding ${binding}`);
+          entries.push({ binding: binding++, resource: smp.gpu });
+        }
+        const bg = device.createBindGroup({
+          layout: currentPipeline.gpu.getBindGroupLayout(1),
+          entries,
+        });
+        passEncoder.setBindGroup(1, bg);
       }
     },
 

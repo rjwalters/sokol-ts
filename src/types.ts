@@ -113,6 +113,14 @@ export interface SamplerDesc {
   wrapU?: WrapMode;
   wrapV?: WrapMode;
   compare?: CompareFunc;
+  /** Anisotropic filtering level. Valid range: 1–16, default 1.
+   *  Values > 1 require minFilter, magFilter, and mipmapFilter to all be LINEAR;
+   *  if they are not, maxAnisotropy is silently clamped to 1 (mirrors Sokol behaviour). */
+  maxAnisotropy?: number;
+  /** Minimum LOD clamp value (default 0). */
+  lodMinClamp?: number;
+  /** Maximum LOD clamp value (default 32). */
+  lodMaxClamp?: number;
   label?: string;
 }
 
@@ -159,6 +167,10 @@ export interface PipelineDesc {
   indexType?: IndexType;
   colors?: ColorTargetDesc[];
   depth?: DepthStencilDesc;
+  /** Number of texture bindings in bind group 1 (locations 0..images-1). Default 0. */
+  images?: number;
+  /** Number of sampler bindings in bind group 1 (locations images..images+samplerCount-1). Default 0. */
+  samplerCount?: number;
   multisample?: { count?: 1 | 4 };
   label?: string;
 }
