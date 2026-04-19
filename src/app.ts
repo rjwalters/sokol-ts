@@ -139,6 +139,37 @@ export async function run(desc: AppDesc): Promise<() => void> {
     dispatch({ type: AppEventType.TOUCH_END, touches: Array.from((e as TouchEvent).changedTouches).map(toCanvasTouch) });
   });
 
+  // Gamepad support — only poll when at least one gamepad is connected
+  let gamepadConnected = false;
+
+  const onGamepadConnected = (e: GamepadEvent) => {
+    gamepadConnected = true;
+    dispatch({ type: AppEventType.GAMEPAD_CONNECTED, gamepadIndex: e.gamepad.index });
+  };
+  window.addEventListener("gamepadconnected", onGamepadConnected);
+  eventMap.push([window, "gamepadconnected", onGamepadConnected as (e: Event) => void]);
+
+  const onGamepadDisconnected = (e: GamepadEvent) => {
+    const gamepads = navigator.getGamepads();
+    gamepadConnected = gamepads.some(gp => gp !== null);
+    dispatch({ type: AppEventType.GAMEPAD_DISCONNECTED, gamepadIndex: e.gamepad.index });
+  };
+  window.addEventListener("gamepaddisconnected", onGamepadDisconnected);
+  eventMap.push([window, "gamepaddisconnected", onGamepadDisconnected as (e: Event) => void]);
+
+  function pollGamepads() {
+    const gamepads = navigator.getGamepads();
+    for (const gp of gamepads) {
+      if (!gp) continue;
+      dispatch({
+        type: AppEventType.GAMEPAD_UPDATE,
+        gamepadIndex: gp.index,
+        gamepadButtons: gp.buttons.map(b => b.pressed),
+        gamepadAxes: Array.from(gp.axes),
+      });
+    }
+  }
+
   const resizeObserver = new ResizeObserver(() => {
     resize();
     dispatch({
@@ -170,6 +201,9 @@ export async function run(desc: AppDesc): Promise<() => void> {
     }
     lastFrameMs = timestampMs;
     resize();
+    if (gamepadConnected) {
+      pollGamepads();
+    }
     desc.preFrame?.(gfx);
     try {
       desc.frame(gfx);

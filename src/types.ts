@@ -326,6 +326,9 @@ export interface AppEvent {
   width?: number;
   height?: number;
   touches?: { id: number; x: number; y: number }[];
+  gamepadIndex?: number;
+  gamepadButtons?: boolean[];
+  gamepadAxes?: number[];
 }
 
 export enum AppEventType {
@@ -339,4 +342,7 @@ export enum AppEventType {
   TOUCH_START = "touchstart",
   TOUCH_MOVE = "touchmove",
   TOUCH_END = "touchend",
+  GAMEPAD_CONNECTED = "gamepadconnected",
+  GAMEPAD_DISCONNECTED = "gamepaddisconnected",
+  GAMEPAD_UPDATE = "gamepadupdate",
 }
