@@ -237,6 +237,36 @@ export interface DrawStats {
   indirectDrawCalls: number;
 }
 
+// Audio types
+
+export type AudioCallback = (
+  buffer: Float32Array,
+  numFrames: number,
+  numChannels: number,
+) => void;
+
+export interface AudioDesc {
+  sampleRate?: number;      // default: AudioContext default (~44100 or 48000)
+  numChannels?: number;     // default: 2 (stereo)
+  bufferFrames?: number;    // default: 128 (one AudioWorklet quantum)
+  volume?: number;          // default: 1.0
+  streamCallback: AudioCallback;
+}
+
+// Reserved for future multi-stream support; initial implementation uses one stream per Audio instance.
+export interface SaudioStream { readonly _brand: "SaudioStream"; readonly id: number }
+
+export interface Audio {
+  readonly sampleRate: number;
+  readonly numChannels: number;
+  readonly isRunning: boolean;
+
+  suspend(): Promise<void>;
+  resume(): Promise<void>;
+  setVolume(volume: number): void;
+  shutdown(): void;
+}
+
 export interface AppEvent {
   type: AppEventType;
   key?: string;
