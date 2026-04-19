@@ -1,7 +1,7 @@
 import {
   type SgBuffer, type SgImage, type SgSampler, type SgShader, type SgPipeline,
   type BufferDesc, type ImageDesc, type SamplerDesc, type ShaderDesc, type PipelineDesc,
-  type Bindings, type PassDesc, type Gfx,
+  type Bindings, type PassDesc, type Gfx, type DrawStats,
   BufferUsage, IndexType, LoadAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
   FilterMode, WrapMode,
 } from "./types.js";
@@ -61,6 +61,9 @@ export function createGfx(
   let uniformOffset = 0;
   let uniformBuffer: GPUBuffer | null = null;
   let uniformBindGroup: GPUBindGroup | null = null;
+  let boundVertexBuffers: BufferSlot[] = [];
+  let boundIndexBuffer: BufferSlot | null = null;
+  let _frameStats: DrawStats = { drawCalls: 0, totalElements: 0, indirectDrawCalls: 0 };
 
   const UNIFORM_BUFFER_SIZE = 65536; // 64KB uniform staging
   if (UNIFORM_BUFFER_SIZE > device.limits.maxUniformBufferBindingSize) {
@@ -82,7 +85,10 @@ export function createGfx(
   function gpuBufferUsage(usage: BufferUsage | undefined): number {
     const base = GPUBufferUsage.COPY_DST;
     switch (usage) {
-      default: return base | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
+      case BufferUsage.INDIRECT:
+        return base | GPUBufferUsage.INDIRECT;
+      default:
+        return base | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
     }
   }
 
@@ -93,6 +99,7 @@ export function createGfx(
     get height() { return canvas.height; },
     get dt() { return frameTime; },
     get frameCount() { return _frameCount; },
+    get frameStats(): DrawStats { return { ..._frameStats }; },
 
     makeBuffer(desc: BufferDesc): SgBuffer {
       const h = handle<SgBuffer>("SgBuffer");
@@ -310,6 +317,9 @@ export function createGfx(
 
       passEncoder = encoder.beginRenderPass(passDesc);
       uniformOffset = 0;
+      boundVertexBuffers = [];
+      boundIndexBuffer = null;
+      _frameStats = { drawCalls: 0, totalElements: 0, indirectDrawCalls: 0 };
     },
 
     applyPipeline(pip: SgPipeline) {
@@ -321,16 +331,21 @@ export function createGfx(
 
     applyBindings(bind: Bindings) {
       if (!passEncoder) throw new Error("No active pass");
+      boundVertexBuffers = [];
       for (let i = 0; i < bind.vertexBuffers.length; i++) {
         const buf = buffers.get(bind.vertexBuffers[i].id);
         if (!buf) throw new Error(`Invalid vertex buffer at index ${i}`);
         passEncoder.setVertexBuffer(i, buf.gpu);
+        boundVertexBuffers.push(buf);
       }
       if (bind.indexBuffer) {
         const buf = buffers.get(bind.indexBuffer.id);
         if (!buf) throw new Error("Invalid index buffer");
         const fmt = currentPipeline?.indexType === IndexType.UINT32 ? "uint32" : "uint16";
         passEncoder.setIndexBuffer(buf.gpu, fmt);
+        boundIndexBuffer = buf;
+      } else {
+        boundIndexBuffer = null;
       }
     },
 
@@ -351,13 +366,68 @@ export function createGfx(
       uniformOffset = alignedOffset + Math.max(data.byteLength, 256);
     },
 
-    draw(baseElement: number, numElements: number, numInstances = 1) {
-      if (!passEncoder) throw new Error("No active pass");
-      if (currentPipeline?.indexType !== IndexType.NONE) {
-        passEncoder.drawIndexed(numElements, numInstances, baseElement);
-      } else {
-        passEncoder.draw(numElements, numInstances, baseElement);
+    draw(baseElement: number, numElements?: number, numInstances = 1) {
+      if (!passEncoder || !currentPipeline) throw new Error("No active pass or pipeline");
+
+      const isIndexed = currentPipeline.indexType !== IndexType.NONE;
+      let count = numElements;
+
+      // Auto-derive count from bound buffer size when omitted or zero
+      if (count === undefined || count === 0) {
+        if (isIndexed && boundIndexBuffer) {
+          const bytesPerIndex = currentPipeline.indexType === IndexType.UINT32 ? 4 : 2;
+          const bufSize = boundIndexBuffer.desc.size ?? boundIndexBuffer.desc.data?.byteLength ?? 0;
+          count = bufSize / bytesPerIndex - baseElement;
+        } else if (boundVertexBuffers.length > 0) {
+          const stride = currentPipeline.desc.layout.buffers[0]?.stride ?? 0;
+          if (stride > 0) {
+            const bufSize = boundVertexBuffers[0].desc.size ?? boundVertexBuffers[0].desc.data?.byteLength ?? 0;
+            count = bufSize / stride - baseElement;
+          } else {
+            count = 0;
+          }
+        } else {
+          count = 0;
+        }
       }
+
+      // Validate element count vs buffer capacity
+      if (isIndexed && boundIndexBuffer) {
+        const bytesPerIndex = currentPipeline.indexType === IndexType.UINT32 ? 4 : 2;
+        const indexCapacity = (boundIndexBuffer.desc.size ?? boundIndexBuffer.desc.data?.byteLength ?? 0) / bytesPerIndex;
+        if (baseElement + count > indexCapacity) {
+          throw new Error(`draw: index range [${baseElement}, ${baseElement + count}) exceeds index buffer capacity ${indexCapacity}`);
+        }
+      } else if (!isIndexed && boundVertexBuffers.length > 0) {
+        const stride = currentPipeline.desc.layout.buffers[0]?.stride ?? 0;
+        if (stride > 0) {
+          const vertexCapacity = (boundVertexBuffers[0].desc.size ?? boundVertexBuffers[0].desc.data?.byteLength ?? 0) / stride;
+          if (baseElement + count > vertexCapacity) {
+            throw new Error(`draw: vertex range [${baseElement}, ${baseElement + count}) exceeds vertex buffer capacity ${vertexCapacity}`);
+          }
+        }
+      }
+
+      if (isIndexed) {
+        passEncoder.drawIndexed(count, numInstances, baseElement);
+      } else {
+        passEncoder.draw(count, numInstances, baseElement);
+      }
+
+      _frameStats.drawCalls++;
+      _frameStats.totalElements += count * numInstances;
+    },
+
+    drawIndirect(indirectBuffer: SgBuffer, indirectOffset = 0) {
+      if (!passEncoder) throw new Error("No active pass");
+      const buf = buffers.get(indirectBuffer.id);
+      if (!buf) throw new Error("Invalid indirect buffer");
+      if (currentPipeline?.indexType !== IndexType.NONE) {
+        passEncoder.drawIndexedIndirect(buf.gpu, indirectOffset);
+      } else {
+        passEncoder.drawIndirect(buf.gpu, indirectOffset);
+      }
+      _frameStats.indirectDrawCalls++;
     },
 
     endPass() {

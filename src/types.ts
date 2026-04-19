@@ -77,8 +77,9 @@ export enum LoadAction {
 
 export enum BufferUsage {
   IMMUTABLE = 0,
-  DYNAMIC = 1,
-  STREAM = 2,
+  DYNAMIC   = 1,
+  STREAM    = 2,
+  INDIRECT  = 3,
 }
 
 // Desc structs — all fields optional, defaults applied at creation
@@ -212,7 +213,8 @@ export interface Gfx {
   applyPipeline(pip: SgPipeline): void;
   applyBindings(bind: Bindings): void;
   applyUniforms(data: ArrayBufferView): void;
-  draw(baseElement: number, numElements: number, numInstances?: number): void;
+  draw(baseElement: number, numElements?: number, numInstances?: number): void;
+  drawIndirect(indirectBuffer: SgBuffer, indirectOffset?: number): void;
   endPass(): void;
   commit(): void;
 
@@ -222,6 +224,13 @@ export interface Gfx {
   readonly height: number;
   readonly dt: number;
   readonly frameCount: number;
+  readonly frameStats: DrawStats;
+}
+
+export interface DrawStats {
+  drawCalls: number;
+  totalElements: number;
+  indirectDrawCalls: number;
 }
 
 export interface AppEvent {
