@@ -184,6 +184,9 @@ export interface AppDesc {
   cleanup?: (gfx: Gfx) => void;
   event?: (ev: AppEvent, gfx: Gfx) => void;
   pixelRatio?: number;
+  normalizedCoords?: boolean;
+  pointerLock?: boolean;
+  eventQueue?: boolean;
 }
 
 export interface Gfx {
@@ -221,14 +224,22 @@ export interface AppEvent {
   type: AppEventType;
   key?: string;
   code?: string;
+  keyRepeat?: boolean;
   mouseX?: number;
   mouseY?: number;
   mouseButton?: number;
+  mouseNormX?: number;
+  mouseNormY?: number;
   deltaX?: number;
   deltaY?: number;
   width?: number;
   height?: number;
-  touches?: { id: number; x: number; y: number }[];
+  touches?: { id: number; x: number; y: number; normX?: number; normY?: number }[];
+  gamepadIndex?: number;
+  gamepadButton?: number;
+  gamepadAxis?: number;
+  gamepadValue?: number;
+  files?: FileList;
 }
 
 export enum AppEventType {
@@ -242,4 +253,16 @@ export enum AppEventType {
   TOUCH_START = "touchstart",
   TOUCH_MOVE = "touchmove",
   TOUCH_END = "touchend",
+  FOCUS = "focus",
+  BLUR = "blur",
+  POINTER_LOCK = "pointerlockchange",
+  POINTER_UNLOCK = "pointerlockerror",
+  GAMEPAD_DOWN = "gamepad_down",
+  GAMEPAD_UP = "gamepad_up",
+  GAMEPAD_AXIS = "gamepad_axis",
+  GAMEPAD_CONNECTED = "gamepadconnected",
+  GAMEPAD_DISCONNECTED = "gamepaddisconnected",
+  DRAG_OVER = "dragover",
+  DRAG_LEAVE = "dragleave",
+  DROP = "drop",
 }
