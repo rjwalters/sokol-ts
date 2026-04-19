@@ -29,8 +29,8 @@ interface SamplerSlot {
 interface ShaderSlot {
   vertexModule: GPUShaderModule;
   fragmentModule: GPUShaderModule;
-  vertexSource: string;
-  fragmentSource: string;
+  vertexEntry: string;
+  fragmentEntry: string;
 }
 
 interface PipelineSlot {
@@ -146,11 +146,38 @@ export function createGfx(
       return h;
     },
 
-    makeShader(desc: ShaderDesc): SgShader {
+    async makeShader(desc: ShaderDesc): Promise<SgShader> {
       const h = handle<SgShader>("SgShader");
-      const vertexModule = device.createShaderModule({ code: desc.vertexSource, label: desc.label ? `${desc.label}_vs` : undefined });
-      const fragmentModule = device.createShaderModule({ code: desc.fragmentSource, label: desc.label ? `${desc.label}_fs` : undefined });
-      shaders.set(h.id, { vertexModule, fragmentModule, vertexSource: desc.vertexSource, fragmentSource: desc.fragmentSource });
+      const combinedSource = desc.source;
+      const vertexModule = device.createShaderModule({
+        code: combinedSource ?? desc.vertexSource!,
+        label: desc.label ? `${desc.label}_vs` : undefined,
+      });
+      const fragmentModule = combinedSource
+        ? vertexModule
+        : device.createShaderModule({
+            code: desc.fragmentSource!,
+            label: desc.label ? `${desc.label}_fs` : undefined,
+          });
+
+      async function checkCompilation(mod: GPUShaderModule, stage: string) {
+        const info = await mod.getCompilationInfo();
+        for (const msg of info.messages) {
+          const loc = `${msg.lineNum}:${msg.linePos}`;
+          if (msg.type === "error") throw new Error(`[${stage} shader] ${loc}: ${msg.message}`);
+          if (msg.type === "warning") console.warn(`[${stage} shader] ${loc}: ${msg.message}`);
+        }
+      }
+
+      await Promise.all([
+        checkCompilation(vertexModule, "vertex"),
+        // Only check fragment separately when it's a different module
+        ...(fragmentModule !== vertexModule ? [checkCompilation(fragmentModule, "fragment")] : []),
+      ]);
+
+      const vertexEntry = desc.vertexEntry ?? "vs_main";
+      const fragmentEntry = desc.fragmentEntry ?? "fs_main";
+      shaders.set(h.id, { vertexModule, fragmentModule, vertexEntry, fragmentEntry });
       return h;
     },
 
@@ -201,12 +228,12 @@ export function createGfx(
         layout: pipelineLayout,
         vertex: {
           module: shd.vertexModule,
-          entryPoint: "vs_main",
+          entryPoint: shd.vertexEntry,
           buffers: vertexBuffers,
         },
         fragment: {
           module: shd.fragmentModule,
-          entryPoint: "fs_main",
+          entryPoint: shd.fragmentEntry,
           targets: colorTargets,
         },
         primitive: {

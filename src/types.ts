@@ -122,8 +122,11 @@ export interface VertexBufferLayoutDesc {
 }
 
 export interface ShaderDesc {
-  vertexSource: string;
-  fragmentSource: string;
+  source?: string;           // combined VS+FS in one module (used for both stages)
+  vertexSource?: string;     // used when source is absent
+  fragmentSource?: string;   // used when source is absent
+  vertexEntry?: string;      // default: "vs_main"
+  fragmentEntry?: string;    // default: "fs_main"
   label?: string;
 }
 
@@ -190,7 +193,7 @@ export interface Gfx {
   makeBuffer(desc: BufferDesc): SgBuffer;
   makeImage(desc: ImageDesc): SgImage;
   makeSampler(desc: SamplerDesc): SgSampler;
-  makeShader(desc: ShaderDesc): SgShader;
+  makeShader(desc: ShaderDesc): Promise<SgShader>;
   makePipeline(desc: PipelineDesc): SgPipeline;
 
   destroyBuffer(buf: SgBuffer): void;
