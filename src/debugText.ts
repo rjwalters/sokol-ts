@@ -31,7 +31,7 @@ export interface DebugTextDesc {
 export interface DebugText {
   /** Print text at pixel position (x, y) with an optional RGBA color override. */
   print(x: number, y: number, text: string, color?: [number, number, number, number]): void;
-  /** printf-style helper — thin wrapper around print(). Supports %s %d %i %f %.Nf %%. */
+  /** printf-style helper — thin wrapper around print(). Supports %s %d %i %f %e %E %g %G %.Nf %%. */
   printf(x: number, y: number, fmt: string, ...args: unknown[]): void;
   /** Set the default color for subsequent print() calls. Components in [0, 1]. */
   setColor(r: number, g: number, b: number, a?: number): void;
@@ -566,9 +566,19 @@ export function createDebugText(gfx: Gfx, desc?: DebugTextDesc): DebugText {
       const str = fmt.replace(/%(\.\d+)?([sdifeEgG%])/g, (_m, prec, spec) => {
         if (spec === "%") return "%";
         const val = args[argIdx++];
-        if (spec === "f" || spec === "e" || spec === "E" || spec === "g" || spec === "G") {
+        if (spec === "f") {
           const decimals = prec ? parseInt(prec.slice(1)) : 6;
           return (val as number).toFixed(decimals);
+        }
+        if (spec === "e" || spec === "E") {
+          const decimals = prec ? parseInt(prec.slice(1)) : 6;
+          const s = (val as number).toExponential(decimals);
+          return spec === "E" ? s.toUpperCase() : s;
+        }
+        if (spec === "g" || spec === "G") {
+          const precision = prec ? parseInt(prec.slice(1)) : 6;
+          const s = (val as number).toPrecision(precision || 1);
+          return spec === "G" ? s.toUpperCase() : s;
         }
         if (spec === "d" || spec === "i") return String(Math.trunc(val as number));
         return String(val);
