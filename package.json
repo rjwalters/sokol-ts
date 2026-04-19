@@ -14,7 +14,7 @@
     "build": "tsc"
   },
   "devDependencies": {
-    "@webgpu/types": "^0.1.69",
+    "@webgpu/types": "^0.1.61",
     "typescript": "^6.0.3",
     "vite": "^5.2.11",
     "vitest": "^4.1.4"
