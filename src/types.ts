@@ -193,6 +193,7 @@ export interface PassDesc {
 
 export interface AppDesc {
   canvas: HTMLCanvasElement | string;
+  device?: GPUDevice;
   init: (gfx: Gfx) => void | Promise<void>;
   frame: (gfx: Gfx) => void;
   cleanup?: (gfx: Gfx) => void;
