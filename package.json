@@ -35,13 +35,15 @@
     "check:all": "npm run lint && npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "docs": "typedoc"
   },
   "peerDependencies": {
     "@webgpu/types": ">=0.1"
   },
   "devDependencies": {
-    "@webgpu/types": "^0.1.61",
+    "@webgpu/types": "^0.1.68",
+    "typedoc": "^0.28.19",
     "typescript": "^6.0.3",
     "vite": "^5.2.11",
     "vitest": "^4.1.4"

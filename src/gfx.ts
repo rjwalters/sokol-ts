@@ -1,3 +1,14 @@
+/**
+ * Graphics context factory.
+ *
+ * Creates the core {@link Gfx} instance that manages GPU resources, render
+ * passes, and draw commands. Normally you do not call this directly -- the
+ * {@link run} function creates it for you. Use this when you need full control
+ * over device and context creation.
+ *
+ * @module
+ */
+
 import {
   type SgBuffer, type SgImage, type SgSampler, type SgShader, type SgPipeline,
   type BufferDesc, type ImageDesc, type SamplerDesc, type ShaderDesc, type PipelineDesc,
@@ -132,6 +143,19 @@ interface PipelineSlot {
   indexType: IndexType;
 }
 
+/**
+ * Create a new {@link Gfx} graphics context.
+ *
+ * This is the low-level factory used internally by {@link run}. Call it
+ * directly when you want to manage the WebGPU device, canvas context, and
+ * frame loop yourself.
+ *
+ * @param device - A `GPUDevice` to use for resource creation and command submission.
+ * @param canvas - The `HTMLCanvasElement` to render into.
+ * @param context - The `GPUCanvasContext` obtained from the canvas.
+ * @param format - The preferred swapchain texture format (e.g. from `navigator.gpu.getPreferredCanvasFormat()`).
+ * @returns A fully initialised {@link Gfx} instance.
+ */
 export function createGfx(
   device: GPUDevice,
   canvas: HTMLCanvasElement,
