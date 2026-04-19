@@ -1,13 +1,47 @@
 {
-  "name": "loom-workspace",
-  "version": "1.0.0",
-  "description": "Loom-managed workspace with AI development orchestration",
-  "private": true,
+  "name": "sokol-ts",
+  "version": "0.1.0",
+  "description": "Sokol-inspired WebGPU rendering and app framework for TypeScript",
+  "license": "MIT",
+  "author": "rjwalters",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rjwalters/sokol-ts.git"
+  },
+  "keywords": ["webgpu", "sokol", "graphics", "typescript", "rendering"],
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
   "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
     "worktree:return": "./.loom/scripts/worktree-return.sh",
-    "check:ci": "echo 'No CI checks configured. Customize this script for your project.' && exit 0",
-    "check:all": "echo 'No checks configured. Customize this script for your project.' && exit 0",
-    "test": "echo 'No tests configured. Customize this script for your project.' && exit 0",
-    "lint": "echo 'No linter configured. Customize this script for your project.' && exit 0"
+    "check:ci": "tsc --noEmit",
+    "check:all": "tsc --noEmit",
+    "test": "echo 'No tests yet'",
+    "lint": "echo 'No linter yet'"
+  },
+  "peerDependencies": {
+    "@webgpu/types": ">=0.1"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.54",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
