@@ -1,10 +1,101 @@
 import {
   type SgBuffer, type SgImage, type SgSampler, type SgShader, type SgPipeline,
   type BufferDesc, type ImageDesc, type SamplerDesc, type ShaderDesc, type PipelineDesc,
-  type Bindings, type PassDesc, type Gfx, type DrawStats, type ShaderRecompileResult,
+  type Bindings, type PassDesc, type Gfx, type Handle, type DrawStats, type ShaderRecompileResult,
   BufferUsage, IndexType, LoadAction, StoreAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
   FilterMode, WrapMode,
 } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Generation-counted handle encoding (matches Sokol's _sg_slot_t strategy)
+// ---------------------------------------------------------------------------
+
+const POOL_BITS = 16;
+const GEN_BITS  = 16;
+const POOL_MASK = (1 << POOL_BITS) - 1;   // 0x0000_FFFF
+const GEN_MASK  = (1 << GEN_BITS)  - 1;   // 0x0000_FFFF
+const GEN_SHIFT = POOL_BITS;
+
+function encodeHandle(index: number, gen: number): number {
+  return ((gen & GEN_MASK) << GEN_SHIFT) | (index & POOL_MASK);
+}
+function slotIndex(id: number): number  { return id & POOL_MASK; }
+function generation(id: number): number { return (id >>> GEN_SHIFT) & GEN_MASK; }
+
+// ---------------------------------------------------------------------------
+// Pool implementation
+// ---------------------------------------------------------------------------
+
+const enum SlotState { INVALID = 0, ALLOC = 1, VALID = 2 }
+
+interface PoolSlot<T> {
+  gen:   number;
+  state: SlotState;
+  res:   T | undefined;
+}
+
+class Pool<T> {
+  private slots: PoolSlot<T>[];
+  private freeList: number[];
+
+  constructor(capacity: number) {
+    // slot 0 is reserved as the "null" sentinel
+    this.slots = Array.from({ length: capacity + 1 }, () =>
+      ({ gen: 0, state: SlotState.INVALID, res: undefined }));
+    this.freeList = Array.from({ length: capacity }, (_, i) => i + 1);
+  }
+
+  alloc(): number {
+    const index = this.freeList.pop();
+    if (index === undefined) throw new Error("Pool exhausted");
+    const slot = this.slots[index];
+    slot.gen = (slot.gen + 1) & GEN_MASK;   // increment; wraps within 16-bit generation range
+    slot.state = SlotState.ALLOC;
+    return encodeHandle(index, slot.gen);
+  }
+
+  set(id: number, res: T): void {
+    const s = this.lookup(id);
+    if (!s) throw new Error("Pool.set on invalid handle");
+    s.res = res;
+    s.state = SlotState.VALID;
+  }
+
+  get(id: number): T | undefined {
+    return this.lookup(id)?.res;
+  }
+
+  free(id: number): T | undefined {
+    const index = slotIndex(id);
+    const slot = this.slots[index];
+    if (slot.state === SlotState.INVALID || slot.gen !== generation(id)) return undefined;
+    const res = slot.res;
+    slot.res = undefined;
+    slot.state = SlotState.INVALID;
+    this.freeList.push(index);
+    return res;
+  }
+
+  private lookup(id: number): PoolSlot<T> | undefined {
+    const index = slotIndex(id);
+    if (index === 0) return undefined;
+    const slot = this.slots[index];
+    if (slot.state === SlotState.INVALID) return undefined;
+    if (slot.gen !== generation(id)) return undefined;  // stale generation
+    return slot;
+  }
+
+  /** Returns all live resource values — used by leak detection. */
+  liveResources(): T[] {
+    return this.slots
+      .filter(s => s.state === SlotState.VALID && s.res !== undefined)
+      .map(s => s.res!);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Slot types
+// ---------------------------------------------------------------------------
 
 interface BufferSlot {
   gpu: GPUBuffer;
@@ -19,6 +110,7 @@ interface ImageSlot {
 
 interface SamplerSlot {
   gpu: GPUSampler;
+  desc: SamplerDesc;
 }
 
 interface ShaderSlot {
@@ -43,17 +135,12 @@ export function createGfx(
   context: GPUCanvasContext,
   format: GPUTextureFormat,
 ): Gfx {
-  let nextId = 1;
-  function handle<T extends { readonly _brand: string; readonly id: number }>(brand: string): T {
-    return { _brand: brand, id: nextId++ } as unknown as T;
-  }
-
-  const buffers = new Map<number, BufferSlot>();
-  const images = new Map<number, ImageSlot>();
-  const samplers = new Map<number, SamplerSlot>();
-  const shaders = new Map<number, ShaderSlot>();
-  const pipelines = new Map<number, PipelineSlot>();
-  // shader id -> set of pipeline ids that reference it
+  const bufferPool   = new Pool<BufferSlot>(128);
+  const imagePool    = new Pool<ImageSlot>(128);
+  const samplerPool  = new Pool<SamplerSlot>(64);
+  const shaderPool   = new Pool<ShaderSlot>(64);
+  const pipelinePool = new Pool<PipelineSlot>(64);
+  // shader handle id -> set of pipeline handle ids that reference it
   const shaderPipelineDeps = new Map<number, Set<number>>();
 
   // Per-frame state
@@ -105,7 +192,7 @@ export function createGfx(
   // original pipeline regardless of blend, stencil, MSAA, or bind group config.
 
   async function rebuildPipeline(pipId: number, slot: PipelineSlot): Promise<void> {
-    const shd = shaders.get(slot.desc.shader.id);
+    const shd = shaderPool.get(slot.desc.shader.id);
     if (!shd) return;
 
     // Clone the stored descriptor and replace only the shader modules
@@ -149,7 +236,7 @@ export function createGfx(
     get frameStats(): DrawStats { return { ..._frameStats }; },
 
     makeBuffer(desc: BufferDesc): SgBuffer {
-      const h = handle<SgBuffer>("SgBuffer");
+      const id = bufferPool.alloc();
       const size = desc.data ? desc.data.byteLength : (desc.size ?? 256);
       const gpu = device.createBuffer({
         size,
@@ -161,12 +248,12 @@ export function createGfx(
         new Uint8Array(gpu.getMappedRange()).set(new Uint8Array(desc.data.buffer, desc.data.byteOffset, desc.data.byteLength));
         gpu.unmap();
       }
-      buffers.set(h.id, { gpu, desc });
-      return h;
+      bufferPool.set(id, { gpu, desc });
+      return { _brand: "SgBuffer", id } as SgBuffer;
     },
 
     makeImage(desc: ImageDesc): SgImage {
-      const h = handle<SgImage>("SgImage");
+      const id = imagePool.alloc();
       const fmt = (desc.format ?? PixelFormat.RGBA8) as GPUTextureFormat;
       let usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
       if (desc.renderTarget) {
@@ -187,12 +274,12 @@ export function createGfx(
           { width: desc.width, height: desc.height },
         );
       }
-      images.set(h.id, { texture, view: texture.createView(), desc });
-      return h;
+      imagePool.set(id, { texture, view: texture.createView(), desc });
+      return { _brand: "SgImage", id } as SgImage;
     },
 
     makeSampler(desc: SamplerDesc): SgSampler {
-      const h = handle<SgSampler>("SgSampler");
+      const id = samplerPool.alloc();
       const minFilter = desc.minFilter ?? FilterMode.NEAREST;
       const magFilter = desc.magFilter ?? FilterMode.NEAREST;
       const mipmapFilter = desc.mipmapFilter ?? FilterMode.NEAREST;
@@ -214,12 +301,12 @@ export function createGfx(
         lodMaxClamp: desc.lodMaxClamp ?? 32,
         label: desc.label,
       });
-      samplers.set(h.id, { gpu });
-      return h;
+      samplerPool.set(id, { gpu, desc });
+      return { _brand: "SgSampler", id } as SgSampler;
     },
 
     async makeShader(desc: ShaderDesc): Promise<SgShader> {
-      const h = handle<SgShader>("SgShader");
+      const id = shaderPool.alloc();
       const combinedSource = desc.source;
       const vertexModule = device.createShaderModule({
         code: combinedSource ?? desc.vertexSource!,
@@ -251,14 +338,14 @@ export function createGfx(
       const fragmentEntry = desc.fragmentEntry ?? "fs_main";
       const vertexSource = combinedSource ?? desc.vertexSource!;
       const fragmentSource = combinedSource ?? desc.fragmentSource ?? vertexSource;
-      shaders.set(h.id, { vertexModule, fragmentModule, vertexEntry, fragmentEntry, vertexSource, fragmentSource });
-      return h;
+      shaderPool.set(id, { vertexModule, fragmentModule, vertexEntry, fragmentEntry, vertexSource, fragmentSource });
+      return { _brand: "SgShader", id } as SgShader;
     },
 
     makePipeline(desc: PipelineDesc): SgPipeline {
-      const h = handle<SgPipeline>("SgPipeline");
-      const shd = shaders.get(desc.shader.id);
-      if (!shd) throw new Error("Invalid shader handle");
+      const shd = shaderPool.get(desc.shader.id);
+      if (!shd) throw new Error("Invalid or stale shader handle");
+      const id = pipelinePool.alloc();
 
       const vertexBuffers: GPUVertexBufferLayout[] = desc.layout.buffers.map((buf, i) => ({
         arrayStride: buf.stride,
@@ -349,14 +436,14 @@ export function createGfx(
 
       const gpuPipeline = device.createRenderPipeline(gpuPipelineDesc);
 
-      pipelines.set(h.id, { gpu: gpuPipeline, desc, gpuDesc: gpuPipelineDesc, indexType: desc.indexType ?? IndexType.NONE });
+      pipelinePool.set(id, { gpu: gpuPipeline, desc, gpuDesc: gpuPipelineDesc, indexType: desc.indexType ?? IndexType.NONE });
 
       // Track shader -> pipeline dependency for hot-reload rebuilding
       const deps = shaderPipelineDeps.get(desc.shader.id) ?? new Set<number>();
-      deps.add(h.id);
+      deps.add(id);
       shaderPipelineDeps.set(desc.shader.id, deps);
 
-      return h;
+      return { _brand: "SgPipeline", id } as SgPipeline;
     },
 
     async recompileShader(
@@ -364,7 +451,7 @@ export function createGfx(
       sources: { vertexSource?: string; fragmentSource?: string },
       callback?: (result: ShaderRecompileResult) => void,
     ): Promise<ShaderRecompileResult> {
-      const slot = shaders.get(shd.id);
+      const slot = shaderPool.get(shd.id);
       if (!slot) {
         const result: ShaderRecompileResult = { ok: false, vertexError: "Invalid shader handle" };
         callback?.(result);
@@ -421,17 +508,17 @@ export function createGfx(
     },
 
     destroyBuffer(buf: SgBuffer) {
-      const slot = buffers.get(buf.id);
-      if (slot) { slot.gpu.destroy(); buffers.delete(buf.id); }
+      const slot = bufferPool.free(buf.id);
+      if (slot) slot.gpu.destroy();
     },
     destroyImage(img: SgImage) {
-      const slot = images.get(img.id);
-      if (slot) { slot.texture.destroy(); images.delete(img.id); }
+      const slot = imagePool.free(img.id);
+      if (slot) slot.texture.destroy();
     },
-    destroySampler(smp: SgSampler) { samplers.delete(smp.id); },
-    destroyShader(shd: SgShader) { shaders.delete(shd.id); },
+    destroySampler(smp: SgSampler) { samplerPool.free(smp.id); },
+    destroyShader(shd: SgShader) { shaderPool.free(shd.id); },
     destroyPipeline(pip: SgPipeline) {
-      const slot = pipelines.get(pip.id);
+      const slot = pipelinePool.get(pip.id);
       if (slot) {
         const deps = shaderPipelineDeps.get(slot.desc.shader.id);
         deps?.delete(pip.id);
@@ -439,14 +526,58 @@ export function createGfx(
         if (deps && deps.size === 0) {
           shaderPipelineDeps.delete(slot.desc.shader.id);
         }
-        pipelines.delete(pip.id);
+      }
+      pipelinePool.free(pip.id);
+    },
+
+    isValid(handle: Handle): boolean {
+      switch (handle._brand) {
+        case "SgBuffer":   return bufferPool.get(handle.id)   !== undefined;
+        case "SgImage":    return imagePool.get(handle.id)    !== undefined;
+        case "SgSampler":  return samplerPool.get(handle.id)  !== undefined;
+        case "SgShader":   return shaderPool.get(handle.id)   !== undefined;
+        case "SgPipeline": return pipelinePool.get(handle.id) !== undefined;
+        default: return false;
       }
     },
 
     updateBuffer(buf: SgBuffer, data: ArrayBufferView) {
-      const slot = buffers.get(buf.id);
-      if (!slot) throw new Error("Invalid buffer handle");
+      const slot = bufferPool.get(buf.id);
+      if (!slot) throw new Error("Invalid or stale buffer handle");
       device.queue.writeBuffer(slot.gpu, 0, data.buffer, data.byteOffset, data.byteLength);
+    },
+
+    writeImageBitmap(img: SgImage, bitmap: ImageBitmap) {
+      const slot = imagePool.get(img.id);
+      if (!slot) throw new Error("Invalid image handle");
+      device.queue.copyExternalImageToTexture(
+        { source: bitmap },
+        { texture: slot.texture },
+        [bitmap.width, bitmap.height],
+      );
+    },
+
+    shutdown() {
+      for (const slot of bufferPool.liveResources())  { slot.gpu.destroy(); }
+      for (const slot of imagePool.liveResources())   { slot.texture.destroy(); }
+      // samplers, shaders, pipelines have no GPU destroy call
+
+      const leakedBuffers   = bufferPool.liveResources();
+      const leakedImages    = imagePool.liveResources();
+      const leakedSamplers  = samplerPool.liveResources();
+      const leakedShaders   = shaderPool.liveResources();
+      const leakedPipelines = pipelinePool.liveResources();
+
+      const leaked = leakedBuffers.length + leakedImages.length +
+                     leakedSamplers.length + leakedShaders.length + leakedPipelines.length;
+      if (leaked > 0) {
+        const labels: string[] = [];
+        for (const s of leakedBuffers)   { if (s.desc.label)   labels.push(s.desc.label); }
+        for (const s of leakedImages)    { if (s.desc.label)   labels.push(s.desc.label); }
+        for (const s of leakedPipelines) { if (s.desc.label)   labels.push(s.desc.label); }
+        const labelStr = labels.length > 0 ? ` (${labels.join(", ")})` : "";
+        console.warn(`[sokol-ts] shutdown: ${leaked} resource(s) not explicitly destroyed${labelStr}`);
+      }
     },
 
     beginPass(desc?: PassDesc) {
@@ -469,11 +600,11 @@ export function createGfx(
 
       if (desc?.offscreen) {
         for (let i = 0; i < desc.offscreen.colorImages.length; i++) {
-          const img = images.get(desc.offscreen.colorImages[i].id);
+          const img = imagePool.get(desc.offscreen.colorImages[i].id);
           if (!img) throw new Error("Invalid offscreen color image");
           const ca = desc.colorAttachments?.[i];
           const loadOp = resolveLoadOp(ca?.action);
-          const resolveSlot = ca?.resolveImage ? images.get(ca.resolveImage.id) : undefined;
+          const resolveSlot = ca?.resolveImage ? imagePool.get(ca.resolveImage.id) : undefined;
           colorAttachments.push({
             view: img.view,
             resolveTarget: resolveSlot?.view,
@@ -488,7 +619,7 @@ export function createGfx(
         const ca = desc?.colorAttachments?.[0];
         const textureView = context.getCurrentTexture().createView();
         const loadOp = resolveLoadOp(ca?.action);
-        const resolveSlot = ca?.resolveImage ? images.get(ca.resolveImage.id) : undefined;
+        const resolveSlot = ca?.resolveImage ? imagePool.get(ca.resolveImage.id) : undefined;
         colorAttachments.push({
           view: textureView,
           resolveTarget: resolveSlot?.view,
@@ -503,11 +634,11 @@ export function createGfx(
       // Resolve depth/stencil attachment
       let depthView: GPUTextureView | undefined;
       if (desc?.offscreen?.depthImage) {
-        const di = images.get(desc.offscreen.depthImage.id);
+        const di = imagePool.get(desc.offscreen.depthImage.id);
         if (!di) throw new Error("Invalid offscreen depth image");
         depthView = di.view;
       } else if (desc?.swapchainDepthImage) {
-        const depthSlot = images.get(desc.swapchainDepthImage.id);
+        const depthSlot = imagePool.get(desc.swapchainDepthImage.id);
         if (!depthSlot) throw new Error("Invalid swapchain depth image");
         depthView = depthSlot.view;
       }
@@ -532,7 +663,7 @@ export function createGfx(
     },
 
     applyPipeline(pip: SgPipeline) {
-      const slot = pipelines.get(pip.id);
+      const slot = pipelinePool.get(pip.id);
       if (!slot || !passEncoder) throw new Error("Invalid pipeline or no active pass");
       passEncoder.setPipeline(slot.gpu);
       currentPipeline = slot;
@@ -544,7 +675,7 @@ export function createGfx(
 
       // Vertex buffers
       for (let i = 0; i < bind.vertexBuffers.length; i++) {
-        const buf = buffers.get(bind.vertexBuffers[i].id);
+        const buf = bufferPool.get(bind.vertexBuffers[i].id);
         if (!buf) throw new Error(`Invalid vertex buffer at index ${i}`);
         passEncoder.setVertexBuffer(i, buf.gpu);
         boundVertexBuffers.push(buf);
@@ -552,7 +683,7 @@ export function createGfx(
 
       // Index buffer
       if (bind.indexBuffer) {
-        const buf = buffers.get(bind.indexBuffer.id);
+        const buf = bufferPool.get(bind.indexBuffer.id);
         if (!buf) throw new Error("Invalid index buffer");
         const fmt = currentPipeline?.indexType === IndexType.UINT32 ? "uint32" : "uint16";
         passEncoder.setIndexBuffer(buf.gpu, fmt);
@@ -569,12 +700,12 @@ export function createGfx(
         const entries: GPUBindGroupEntry[] = [];
         let binding = 0;
         for (const imgHandle of imageHandles) {
-          const img = images.get(imgHandle.id);
+          const img = imagePool.get(imgHandle.id);
           if (!img) throw new Error(`Invalid image handle at texture binding ${binding}`);
           entries.push({ binding: binding++, resource: img.view });
         }
         for (const smpHandle of samplerHandles) {
-          const smp = samplers.get(smpHandle.id);
+          const smp = samplerPool.get(smpHandle.id);
           if (!smp) throw new Error(`Invalid sampler handle at sampler binding ${binding}`);
           entries.push({ binding: binding++, resource: smp.gpu });
         }
@@ -657,7 +788,7 @@ export function createGfx(
 
     drawIndirect(indirectBuffer: SgBuffer, indirectOffset = 0) {
       if (!passEncoder) throw new Error("No active pass");
-      const buf = buffers.get(indirectBuffer.id);
+      const buf = bufferPool.get(indirectBuffer.id);
       if (!buf) throw new Error("Invalid indirect buffer");
       if (currentPipeline?.indexType !== IndexType.NONE) {
         passEncoder.drawIndexedIndirect(buf.gpu, indirectOffset);
@@ -695,7 +826,7 @@ export function createGfx(
       // Snapshot the set to avoid issues if deps mutate during async iteration
       // Rebuild all dependent pipelines in parallel for better performance
       await Promise.all([...deps].map(pipId => {
-        const slot = pipelines.get(pipId);
+        const slot = pipelinePool.get(pipId);
         if (!slot) return Promise.resolve();
         return rebuildPipeline(pipId, slot);
       }));
