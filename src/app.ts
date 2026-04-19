@@ -12,10 +12,23 @@ export async function run(desc: AppDesc): Promise<() => void> {
     throw new Error("WebGPU is not supported in this browser");
   }
 
-  const adapter = await navigator.gpu.requestAdapter();
+  const adapterOptions: GPURequestAdapterOptions = {};
+  if (desc.powerPreference !== undefined) {
+    adapterOptions.powerPreference = desc.powerPreference;
+  }
+  const adapter = await navigator.gpu.requestAdapter(adapterOptions);
   if (!adapter) throw new Error("Failed to get GPU adapter");
 
-  const device = await adapter.requestDevice();
+  const reqFeatures: GPUFeatureName[] = desc.requiredFeatures ?? [];
+  const unsupported = reqFeatures.filter(f => !adapter.features.has(f));
+  if (unsupported.length > 0) {
+    throw new Error(`GPU adapter does not support required features: ${unsupported.join(", ")}`);
+  }
+
+  const device = await adapter.requestDevice({
+    requiredFeatures: reqFeatures,
+    requiredLimits: desc.requiredLimits,
+  });
   const context = canvas.getContext("webgpu")!;
   const format = navigator.gpu.getPreferredCanvasFormat();
 
@@ -35,6 +48,16 @@ export async function run(desc: AppDesc): Promise<() => void> {
   resize();
 
   const gfx = createGfx(device, canvas, context, format);
+
+  // Hoist running flag so the device.lost handler can reference it
+  let running = true;
+
+  // Attach device lost handler before init to avoid a race with async init
+  device.lost.then((info) => {
+    console.warn(`WebGPU device lost (reason: ${info.reason}): ${info.message}`);
+    running = false;
+    desc.deviceLost?.(info.reason, info.message);
+  });
 
   await desc.init(gfx);
 
@@ -81,7 +104,6 @@ export async function run(desc: AppDesc): Promise<() => void> {
   resizeObserver.observe(canvas);
 
   // Frame loop
-  let running = true;
   function frame() {
     if (!running) return;
     resize();

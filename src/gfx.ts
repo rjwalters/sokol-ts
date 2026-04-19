@@ -63,6 +63,11 @@ export function createGfx(
   let uniformBindGroup: GPUBindGroup | null = null;
 
   const UNIFORM_BUFFER_SIZE = 65536; // 64KB uniform staging
+  if (UNIFORM_BUFFER_SIZE > device.limits.maxUniformBufferBindingSize) {
+    throw new Error(
+      `UNIFORM_BUFFER_SIZE (${UNIFORM_BUFFER_SIZE}) exceeds device limit maxUniformBufferBindingSize (${device.limits.maxUniformBufferBindingSize})`
+    );
+  }
 
   function ensureUniformBuffer() {
     if (!uniformBuffer) {

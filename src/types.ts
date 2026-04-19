@@ -183,7 +183,11 @@ export interface AppDesc {
   frame: (gfx: Gfx) => void;
   cleanup?: (gfx: Gfx) => void;
   event?: (ev: AppEvent, gfx: Gfx) => void;
+  deviceLost?: (reason: GPUDeviceLostReason, message: string) => void;
   pixelRatio?: number;
+  powerPreference?: "low-power" | "high-performance";
+  requiredFeatures?: GPUFeatureName[];
+  requiredLimits?: Record<string, number>;
 }
 
 export interface Gfx {
