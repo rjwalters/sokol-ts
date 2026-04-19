@@ -1,15 +1,22 @@
 import { defineConfig } from "@playwright/test";
 
+const isCI = !!process.env.CI;
+
 export default defineConfig({
   testDir: "e2e",
   timeout: 30_000,
-  retries: 1,
+  retries: isCI ? 2 : 1,
   use: {
     baseURL: "http://localhost:5173",
-    // WebGPU needs the full browser, not the headless shell
-    headless: false,
+    headless: true,
     launchOptions: {
-      args: ["--enable-unsafe-webgpu"],
+      args: [
+        "--enable-unsafe-webgpu",
+        "--enable-features=Vulkan",
+        "--use-angle=vulkan",
+        // Software Vulkan renderer for Linux CI without a GPU
+        ...(isCI ? ["--use-vulkan=swiftshader"] : []),
+      ],
     },
     viewport: { width: 800, height: 600 },
     screenshot: "only-on-failure",
