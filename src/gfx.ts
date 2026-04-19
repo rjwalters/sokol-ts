@@ -445,6 +445,10 @@ export function createGfx(
         const di = images.get(desc.offscreen.depthImage.id);
         if (!di) throw new Error("Invalid offscreen depth image");
         depthView = di.view;
+      } else if (desc?.swapchainDepthImage) {
+        const depthSlot = images.get(desc.swapchainDepthImage.id);
+        if (!depthSlot) throw new Error("Invalid swapchain depth image");
+        depthView = depthSlot.view;
       }
 
       const passDescGpu: GPURenderPassDescriptor = {
