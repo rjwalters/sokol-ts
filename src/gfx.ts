@@ -246,6 +246,16 @@ export function createGfx(
       device.queue.writeBuffer(slot.gpu, 0, data.buffer, data.byteOffset, data.byteLength);
     },
 
+    writeImageBitmap(img: SgImage, bitmap: ImageBitmap) {
+      const slot = images.get(img.id);
+      if (!slot) throw new Error("Invalid image handle");
+      device.queue.copyExternalImageToTexture(
+        { source: bitmap },
+        { texture: slot.texture },
+        [bitmap.width, bitmap.height],
+      );
+    },
+
     beginPass(desc?: PassDesc) {
       encoder = device.createCommandEncoder();
 
