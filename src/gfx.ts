@@ -315,6 +315,31 @@ export function createGfx(
 
       const passDesc: GPURenderPassDescriptor = { colorAttachments };
 
+      // Wire depth attachment if provided
+      if (desc?.depthAttachment) {
+        let depthView: GPUTextureView | undefined;
+        if (desc.offscreen?.depthImage) {
+          const depthSlot = images.get(desc.offscreen.depthImage.id);
+          if (!depthSlot) throw new Error("Invalid offscreen depth image");
+          depthView = depthSlot.view;
+        } else if (desc.swapchainDepthImage) {
+          const depthSlot = images.get(desc.swapchainDepthImage.id);
+          if (!depthSlot) throw new Error("Invalid swapchain depth image");
+          depthView = depthSlot.view;
+        }
+        if (depthView) {
+          (passDesc as GPURenderPassDescriptor & { depthStencilAttachment: GPURenderPassDepthStencilAttachment }).depthStencilAttachment = {
+            view: depthView,
+            depthLoadOp: desc.depthAttachment.action === LoadAction.LOAD ? "load" : "clear",
+            depthClearValue: desc.depthAttachment.value ?? 1.0,
+            depthStoreOp: "store",
+            stencilLoadOp: "clear",
+            stencilClearValue: 0,
+            stencilStoreOp: "discard",
+          };
+        }
+      }
+
       passEncoder = encoder.beginRenderPass(passDesc);
       uniformOffset = 0;
       boundVertexBuffers = [];

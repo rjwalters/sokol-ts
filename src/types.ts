@@ -174,6 +174,8 @@ export interface PassDesc {
     action?: LoadAction;
     value?: number;
   };
+  /** Depth texture to use with the swapchain (non-offscreen) pass */
+  swapchainDepthImage?: SgImage;
   // If omitted, renders to the swapchain
   offscreen?: {
     colorImages: SgImage[];
