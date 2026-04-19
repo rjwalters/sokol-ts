@@ -147,10 +147,44 @@ export async function run(desc: AppDesc): Promise<() => void> {
   resizeObserver.observe(canvas);
 
   // Frame loop
-  function frame() {
-    if (!running) return;
+  let paused = false;
+
+  const onVisibilityChange = () => {
+    paused = document.hidden;
+    if (!paused && running) requestAnimationFrame(frame);
+  };
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  eventMap.push([document, "visibilitychange", onVisibilityChange]);
+
+  const targetInterval = desc.targetFps ? 1000 / desc.targetFps : 0;
+  let lastFrameMs = 0;
+
+  function frame(timestampMs: number) {
+    if (!running || paused) return;
+    if (targetInterval > 0 && timestampMs - lastFrameMs < targetInterval) {
+      requestAnimationFrame(frame);
+      return;
+    }
+    lastFrameMs = timestampMs;
     resize();
-    desc.frame(gfx);
+    desc.preFrame?.(gfx);
+    try {
+      desc.frame(gfx);
+    } catch (err) {
+      desc.postFrame?.(gfx);
+      if (desc.onError) {
+        if (desc.onError(err) === false) {
+          running = false;
+        } else {
+          requestAnimationFrame(frame);
+        }
+      } else {
+        console.error("[sokol-ts] frame error:", err);
+        running = false;
+      }
+      return;
+    }
+    desc.postFrame?.(gfx);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
