@@ -1,7 +1,7 @@
 import {
   type SgBuffer, type SgImage, type SgSampler, type SgShader, type SgPipeline,
   type BufferDesc, type ImageDesc, type SamplerDesc, type ShaderDesc, type PipelineDesc,
-  type Bindings, type PassDesc, type Gfx, type DrawStats,
+  type Bindings, type PassDesc, type Gfx, type DrawStats, type ShaderRecompileResult,
   BufferUsage, IndexType, LoadAction, StoreAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
   FilterMode, WrapMode,
 } from "./types.js";
@@ -31,6 +31,8 @@ interface ShaderSlot {
   fragmentModule: GPUShaderModule;
   vertexEntry: string;
   fragmentEntry: string;
+  vertexSource: string;
+  fragmentSource: string;
 }
 
 interface PipelineSlot {
@@ -193,7 +195,9 @@ export function createGfx(
 
       const vertexEntry = desc.vertexEntry ?? "vs_main";
       const fragmentEntry = desc.fragmentEntry ?? "fs_main";
-      shaders.set(h.id, { vertexModule, fragmentModule, vertexEntry, fragmentEntry });
+      const vertexSource = combinedSource ?? desc.vertexSource!;
+      const fragmentSource = combinedSource ?? desc.fragmentSource ?? vertexSource;
+      shaders.set(h.id, { vertexModule, fragmentModule, vertexEntry, fragmentEntry, vertexSource, fragmentSource });
       return h;
     },
 
@@ -270,6 +274,67 @@ export function createGfx(
 
       pipelines.set(h.id, { gpu: gpuPipeline, desc, indexType: desc.indexType ?? IndexType.NONE });
       return h;
+    },
+
+    async recompileShader(
+      shd: SgShader,
+      sources: { vertexSource?: string; fragmentSource?: string },
+      callback?: (result: ShaderRecompileResult) => void,
+    ): Promise<ShaderRecompileResult> {
+      const slot = shaders.get(shd.id);
+      if (!slot) {
+        const result: ShaderRecompileResult = { ok: false, vertexError: "Invalid shader handle" };
+        callback?.(result);
+        return result;
+      }
+
+      const nextVertex = sources.vertexSource ?? slot.vertexSource;
+      const nextFragment = sources.fragmentSource ?? slot.fragmentSource;
+
+      // Diff-based early exit — no work if source is unchanged
+      if (nextVertex === slot.vertexSource && nextFragment === slot.fragmentSource) {
+        const result: ShaderRecompileResult = { ok: true, shader: shd };
+        callback?.(result);
+        return result;
+      }
+
+      // Compile new modules — createShaderModule never throws; errors surface via getCompilationInfo()
+      const newVert = device.createShaderModule({ code: nextVertex, label: `${shd.id}_vs_hot` });
+      const newFrag = device.createShaderModule({ code: nextFragment, label: `${shd.id}_fs_hot` });
+
+      const [vertInfo, fragInfo] = await Promise.all([
+        newVert.getCompilationInfo(),
+        newFrag.getCompilationInfo(),
+      ]);
+
+      const vertErrors = vertInfo.messages
+        .filter(m => m.type === "error")
+        .map(m => m.message)
+        .join("\n");
+      const fragErrors = fragInfo.messages
+        .filter(m => m.type === "error")
+        .map(m => m.message)
+        .join("\n");
+
+      if (vertErrors || fragErrors) {
+        const result: ShaderRecompileResult = {
+          ok: false,
+          vertexError: vertErrors || undefined,
+          fragmentError: fragErrors || undefined,
+        };
+        callback?.(result);
+        return result;
+      }
+
+      // Atomically commit new modules and updated source to the slot
+      slot.vertexModule = newVert;
+      slot.fragmentModule = newFrag;
+      slot.vertexSource = nextVertex;
+      slot.fragmentSource = nextFragment;
+
+      const result: ShaderRecompileResult = { ok: true, shader: shd };
+      callback?.(result);
+      return result;
     },
 
     destroyBuffer(buf: SgBuffer) {
