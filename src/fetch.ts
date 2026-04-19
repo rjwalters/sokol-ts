@@ -242,8 +242,8 @@ export function createSfetch(desc?: FetchSetupDesc): SfetchContext {
         signal: req.signal,
         onProgress: req.onProgress,
         onError: req.onError,
-        onDone(source, url) {
-          const shader = gfx.makeShader({
+        async onDone(source, url) {
+          const shader = await gfx.makeShader({
             vertexSource: source,
             fragmentSource: source,
             label: req.label,
