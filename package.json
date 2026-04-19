@@ -21,13 +21,14 @@
   },
   "files": [
     "dist",
+    "!dist/examples",
     "LICENSE",
     "CHANGELOG.md"
   ],
   "sideEffects": false,
   "scripts": {
     "dev": "vite examples/cube",
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "prepublishOnly": "npm run build",
     "worktree:return": "./.loom/scripts/worktree-return.sh",
     "check:ci": "npm run lint && npm run build",
