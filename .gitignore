@@ -1,5 +1,11 @@
+# Dependencies
+node_modules/
+
 # Build output
 dist/
+
+# Generated documentation
+docs/
 
 # Loom runtime state (don't commit these)
 .loom-in-use

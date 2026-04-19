@@ -1,16 +1,23 @@
 /**
- * debugText.ts — sokol_debugtext equivalent for sokol-ts
+ * Debug text overlay renderer (sokol_debugtext equivalent).
  *
  * Creates a self-contained debug text renderer that overlays pixel-coordinate
- * text onto an existing WebGPU scene. Uses an embedded 8×8 bitmap font atlas
- * and batches all print() calls into a single draw call per draw() invocation.
+ * text onto an existing WebGPU scene. Uses an embedded 8x8 bitmap font atlas
+ * and batches all `print()` calls into a single draw call per `draw()` invocation.
  *
- * Usage:
- *   const dt = createDebugText(gfx);
- *   // in frame():
- *   dt.print(10, 10, "Hello World!");
- *   dt.printf(10, 20, "FPS: %.1f", 1 / gfx.dt);
- *   dt.draw(gfx);   // overlays on existing scene, resets state
+ * @example
+ * ```ts
+ * import { createDebugText } from "sokol-ts";
+ *
+ * const dt = createDebugText(gfx);
+ *
+ * // In your frame callback:
+ * dt.print(10, 10, "Hello World!");
+ * dt.printf(10, 20, "FPS: %.1f", 1 / gfx.dt);
+ * dt.draw(gfx); // overlays on existing scene, resets state
+ * ```
+ *
+ * @module
  */
 
 import {
@@ -307,6 +314,17 @@ struct VOut { @builtin(position) clip: vec4f, @location(0) uv: vec2f, @location(
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
+/**
+ * Create a {@link DebugText} overlay renderer.
+ *
+ * Allocates GPU resources (font atlas texture, vertex/index buffers, pipeline)
+ * for rendering up to `maxChars` characters per frame. Call {@link DebugText.destroy}
+ * when done to release resources.
+ *
+ * @param gfx - The graphics context to create resources on.
+ * @param desc - Optional configuration (max characters, coordinate origin).
+ * @returns A {@link DebugText} instance.
+ */
 export function createDebugText(gfx: Gfx, desc?: DebugTextDesc): DebugText {
   // Uint16 index buffer can address vertices 0–65535.  Each character uses
   // 4 vertices, so the maximum safe character count is floor(65535/4) = 16383.
