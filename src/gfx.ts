@@ -2,7 +2,7 @@ import {
   type SgBuffer, type SgImage, type SgSampler, type SgShader, type SgPipeline,
   type BufferDesc, type ImageDesc, type SamplerDesc, type ShaderDesc, type PipelineDesc,
   type Bindings, type PassDesc, type Gfx, type DrawStats,
-  BufferUsage, IndexType, LoadAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
+  BufferUsage, IndexType, LoadAction, StoreAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
   FilterMode, WrapMode,
 } from "./types.js";
 
@@ -129,6 +129,7 @@ export function createGfx(
         size: { width: desc.width, height: desc.height },
         format: fmt,
         usage,
+        sampleCount: desc.sampleCount ?? 1,
         label: desc.label,
       });
       if (desc.data) {
@@ -260,6 +261,7 @@ export function createGfx(
           depthWriteEnabled: desc.depth.depthWrite ?? true,
           depthCompare: (desc.depth.depthCompare ?? CompareFunc.LESS) as GPUCompareFunction,
         } : undefined,
+        multisample: { count: desc.multisample?.count ?? 1 },
         label: desc.label,
       });
 
@@ -286,7 +288,20 @@ export function createGfx(
     },
 
     beginPass(desc?: PassDesc) {
-      encoder = device.createCommandEncoder();
+      // Create the encoder once per frame; reuse across multiple passes.
+      if (!encoder) {
+        encoder = device.createCommandEncoder();
+      }
+
+      function resolveLoadOp(action: LoadAction | undefined): GPULoadOp {
+        return action === LoadAction.LOAD || action === LoadAction.DONTCARE
+          ? "load"
+          : "clear";
+      }
+
+      function resolveStoreOp(sa: StoreAction | undefined): GPUStoreOp {
+        return sa === StoreAction.DISCARD ? "discard" : "store";
+      }
 
       const colorAttachments: GPURenderPassColorAttachment[] = [];
 
@@ -295,27 +310,55 @@ export function createGfx(
           const img = images.get(desc.offscreen.colorImages[i].id);
           if (!img) throw new Error("Invalid offscreen color image");
           const ca = desc.colorAttachments?.[i];
+          const loadOp = resolveLoadOp(ca?.action);
+          const resolveSlot = ca?.resolveImage ? images.get(ca.resolveImage.id) : undefined;
           colorAttachments.push({
             view: img.view,
-            loadOp: ca?.action === LoadAction.LOAD ? "load" : "clear",
-            storeOp: "store",
-            clearValue: ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 },
+            resolveTarget: resolveSlot?.view,
+            loadOp,
+            storeOp: resolveStoreOp(ca?.storeAction),
+            clearValue: loadOp === "clear"
+              ? (ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 })
+              : undefined,
           });
         }
       } else {
         const ca = desc?.colorAttachments?.[0];
         const textureView = context.getCurrentTexture().createView();
+        const loadOp = resolveLoadOp(ca?.action);
+        const resolveSlot = ca?.resolveImage ? images.get(ca.resolveImage.id) : undefined;
         colorAttachments.push({
           view: textureView,
-          loadOp: ca?.action === LoadAction.LOAD ? "load" : "clear",
-          storeOp: "store",
-          clearValue: ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 },
+          resolveTarget: resolveSlot?.view,
+          loadOp,
+          storeOp: resolveStoreOp(ca?.storeAction),
+          clearValue: loadOp === "clear"
+            ? (ca?.color ? { r: ca.color[0], g: ca.color[1], b: ca.color[2], a: ca.color[3] } : { r: 0, g: 0, b: 0, a: 1 })
+            : undefined,
         });
       }
 
-      const passDesc: GPURenderPassDescriptor = { colorAttachments };
+      // Resolve depth/stencil attachment
+      let depthView: GPUTextureView | undefined;
+      if (desc?.offscreen?.depthImage) {
+        const di = images.get(desc.offscreen.depthImage.id);
+        if (!di) throw new Error("Invalid offscreen depth image");
+        depthView = di.view;
+      }
 
-      passEncoder = encoder.beginRenderPass(passDesc);
+      const passDescGpu: GPURenderPassDescriptor = {
+        colorAttachments,
+        depthStencilAttachment: depthView ? {
+          view: depthView,
+          depthLoadOp: resolveLoadOp(desc?.depthAttachment?.action),
+          depthStoreOp: resolveStoreOp(desc?.depthAttachment?.storeAction),
+          depthClearValue: desc?.depthAttachment?.value ?? 1.0,
+          stencilLoadOp: "clear",
+          stencilStoreOp: "store",
+        } : undefined,
+      };
+
+      passEncoder = encoder.beginRenderPass(passDescGpu);
       uniformOffset = 0;
       boundVertexBuffers = [];
       boundIndexBuffer = null;
@@ -444,6 +487,7 @@ export function createGfx(
       }
       currentPipeline = null;
       uniformBindGroup = null;
+      uniformOffset = 0;
 
       const now = performance.now();
       frameTime = (now - lastFrameTime) / 1000;
