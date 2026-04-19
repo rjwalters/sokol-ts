@@ -214,6 +214,10 @@ export interface AppDesc {
   event?: (ev: AppEvent, gfx: Gfx) => void;
   deviceLost?: (reason: GPUDeviceLostReason, message: string) => void;
   pixelRatio?: number;
+  normalizedCoords?: boolean;
+  pointerLock?: boolean;
+  eventQueue?: boolean;
+  dragDrop?: boolean;
   powerPreference?: "low-power" | "high-performance";
   requiredFeatures?: GPUFeatureName[];
   requiredLimits?: Record<string, number>;
@@ -250,7 +254,9 @@ export interface Gfx {
   destroyShader(shd: SgShader): void;
   destroyPipeline(pip: SgPipeline): void;
 
+  isValid(handle: Handle): boolean;
   updateBuffer(buf: SgBuffer, data: ArrayBufferView): void;
+  writeImageBitmap(img: SgImage, bitmap: ImageBitmap): void;
 
   beginPass(desc?: PassDesc): void;
   applyPipeline(pip: SgPipeline): void;
@@ -260,6 +266,7 @@ export interface Gfx {
   drawIndirect(indirectBuffer: SgBuffer, indirectOffset?: number): void;
   endPass(): void;
   commit(): void;
+  shutdown(): void;
 
   rebuildPipelinesForShader(shader: SgShader): Promise<void>;
 
@@ -314,21 +321,78 @@ export interface Audio {
   shutdown(): void;
 }
 
+// ---- sfetch types ----
+
+export type FetchResponseType = "arraybuffer" | "text" | "json" | "image";
+
+export interface FetchProgress {
+  loaded: number;   // bytes received so far
+  total: number;    // Content-Length, or 0 if unknown
+  ratio: number;    // loaded/total, or 0 if unknown
+}
+
+export interface FetchRequest<T> {
+  url: string;
+  type: FetchResponseType;
+  priority?: number;           // higher = fetched first; default 0
+  signal?: AbortSignal;        // caller-supplied AbortController.signal
+  onProgress?: (p: FetchProgress) => void;
+  onDone: (result: T, url: string) => void;
+  onError?: (err: Error, url: string) => void;
+}
+
+export interface FetchImageRequest {
+  url: string;
+  signal?: AbortSignal;
+  onProgress?: (p: FetchProgress) => void;
+  onDone: (image: SgImage, url: string) => void;
+  onError?: (err: Error, url: string) => void;
+  label?: string;
+}
+
+export interface FetchShaderRequest {
+  url: string;
+  signal?: AbortSignal;
+  onProgress?: (p: FetchProgress) => void;
+  onDone: (shader: SgShader, url: string) => void;
+  onError?: (err: Error, url: string) => void;
+  label?: string;
+}
+
+export interface FetchSetupDesc {
+  maxConcurrent?: number;   // default 6, mirrors browser connection limits
+  cacheCapacity?: number;   // max number of cached responses; 0 = no cache
+}
+
+export interface SfetchContext {
+  fetch<T>(req: FetchRequest<T>): void;
+  fetchImage(gfx: Gfx, req: FetchImageRequest): void;
+  fetchShader(gfx: Gfx, req: FetchShaderRequest): void;
+  batch(requests: FetchRequest<unknown>[], onAllDone: () => void): void;
+  clearCache(): void;
+  cancelAll(): void;
+}
+
 export interface AppEvent {
   type: AppEventType;
   key?: string;
   code?: string;
+  keyRepeat?: boolean;
   mouseX?: number;
   mouseY?: number;
   mouseButton?: number;
+  mouseNormX?: number;
+  mouseNormY?: number;
   deltaX?: number;
   deltaY?: number;
   width?: number;
   height?: number;
-  touches?: { id: number; x: number; y: number }[];
+  touches?: { id: number; x: number; y: number; normX?: number; normY?: number }[];
   gamepadIndex?: number;
-  gamepadButtons?: boolean[];
-  gamepadAxes?: number[];
+  gamepadButton?: number;
+  gamepadAxis?: number;
+  gamepadValue?: number;
+  files?: FileList;
 }
 
 export enum AppEventType {
@@ -342,7 +406,16 @@ export enum AppEventType {
   TOUCH_START = "touchstart",
   TOUCH_MOVE = "touchmove",
   TOUCH_END = "touchend",
+  FOCUS = "focus",
+  BLUR = "blur",
+  POINTER_LOCK = "pointerlockchange",
+  POINTER_UNLOCK = "pointer_unlock",
+  GAMEPAD_DOWN = "gamepad_down",
+  GAMEPAD_UP = "gamepad_up",
+  GAMEPAD_AXIS = "gamepad_axis",
   GAMEPAD_CONNECTED = "gamepadconnected",
   GAMEPAD_DISCONNECTED = "gamepaddisconnected",
-  GAMEPAD_UPDATE = "gamepadupdate",
+  DRAG_OVER = "dragover",
+  DRAG_LEAVE = "dragleave",
+  DROP = "drop",
 }
