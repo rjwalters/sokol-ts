@@ -8,7 +8,13 @@
     "type": "git",
     "url": "https://github.com/rjwalters/sokol-ts.git"
   },
-  "keywords": ["webgpu", "sokol", "graphics", "typescript", "rendering"],
+  "keywords": [
+    "webgpu",
+    "sokol",
+    "graphics",
+    "typescript",
+    "rendering"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -35,6 +41,7 @@
     "check:all": "npm run lint && npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "lint": "tsc --noEmit",
     "docs": "typedoc"
   },
@@ -42,6 +49,7 @@
     "@webgpu/types": ">=0.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@webgpu/types": "^0.1.68",
     "typedoc": "^0.28.19",
     "typescript": "^6.0.3",
