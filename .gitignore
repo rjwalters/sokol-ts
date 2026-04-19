@@ -1,6 +1,9 @@
 # Build output
 dist/
 
+# Dependencies
+node_modules/
+
 # Loom runtime state (don't commit these)
 .loom-in-use
 .loom-checkpoint

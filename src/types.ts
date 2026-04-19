@@ -235,7 +235,7 @@ export interface PipelineDesc {
   images?: number;
   /** Number of sampler bindings in bind group 1 (locations images..images+samplerCount-1). Default 0. */
   samplerCount?: number;
-  msaa?: MsaaDesc;
+  multisample?: MsaaDesc;
   label?: string;
 }
 

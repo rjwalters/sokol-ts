@@ -99,7 +99,7 @@ export function createGfx(
       depth: desc.depth,
       images: desc.images,
       samplerCount: desc.samplerCount,
-      msaa: desc.msaa,
+      multisample: desc.multisample,
     });
   }
 
@@ -123,6 +123,10 @@ export function createGfx(
   async function rebuildPipeline(pipId: number, slot: PipelineSlot): Promise<void> {
     const shd = shaders.get(slot.desc.shader.id);
     if (!shd) return;
+
+    // Invalidate the pipeline cache — the shader modules have changed,
+    // so any cached GPU pipeline keyed against the old shader is stale.
+    pipelineCache.clear();
 
     // Clone the stored descriptor and replace only the shader modules
     const rebuiltDesc: GPURenderPipelineDescriptor = {
@@ -383,9 +387,9 @@ export function createGfx(
           stencilReadMask: desc.depth.stencilReadMask ?? 0xFF,
           stencilWriteMask: desc.depth.stencilWriteMask ?? 0xFF,
         } : undefined,
-        multisample: desc.msaa ? {
-          count: desc.msaa.count ?? 4,
-          alphaToCoverageEnabled: desc.msaa.alphaToCoverage ?? false,
+        multisample: desc.multisample ? {
+          count: desc.multisample.count ?? 4,
+          alphaToCoverageEnabled: desc.multisample.alphaToCoverage ?? false,
         } : undefined,
         label: desc.label,
       };
@@ -481,6 +485,10 @@ export function createGfx(
     destroyPipeline(pip: SgPipeline) {
       const slot = pipelines.get(pip.id);
       if (slot) {
+        // Remove cached GPU pipeline for this descriptor so it won't be reused stale
+        const key = pipelineKey(slot.desc);
+        pipelineCache.delete(key);
+
         const deps = shaderPipelineDeps.get(slot.desc.shader.id);
         deps?.delete(pip.id);
         // Prune empty dep sets to avoid memory leaks
