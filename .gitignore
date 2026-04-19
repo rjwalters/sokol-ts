@@ -1,3 +1,6 @@
+# Build output
+dist/
+
 # Loom runtime state (don't commit these)
 .loom-in-use
 .loom-checkpoint
