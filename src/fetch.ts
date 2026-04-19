@@ -236,21 +236,77 @@ export function createSfetch(desc?: FetchSetupDesc): SfetchContext {
     },
 
     fetchShader(gfx: Gfx, req: FetchShaderRequest): void {
-      ctx.fetch<string>({
-        url: req.url,
-        type: "text",
-        signal: req.signal,
-        onProgress: req.onProgress,
-        onError: req.onError,
-        async onDone(source, url) {
-          const shader = await gfx.makeShader({
-            vertexSource: source,
-            fragmentSource: source,
-            label: req.label,
-          });
-          req.onDone(shader, url);
-        },
-      });
+      if (req.vertexUrl && req.fragmentUrl) {
+        // Separate vertex/fragment shader files — fetch in parallel.
+        let vertexSource: string | undefined;
+        let fragmentSource: string | undefined;
+        let completed = 0;
+        let errored = false;
+
+        const finish = async () => {
+          if (++completed < 2 || errored) return;
+          try {
+            const shader = await gfx.makeShader({
+              vertexSource: vertexSource!,
+              fragmentSource: fragmentSource!,
+              label: req.label,
+            });
+            req.onDone(shader, `${req.vertexUrl}+${req.fragmentUrl}`);
+          } catch (err) {
+            onError(err instanceof Error ? err : new Error(String(err)), `${req.vertexUrl}+${req.fragmentUrl}`);
+          }
+        };
+
+        const onError = (err: Error, url: string) => {
+          if (errored) return;
+          errored = true;
+          if (req.onError) req.onError(err, url);
+        };
+
+        ctx.fetch<string>({
+          url: req.vertexUrl,
+          type: "text",
+          signal: req.signal,
+          onProgress: req.onProgress,
+          onError,
+          onDone(source) {
+            vertexSource = source;
+            finish();
+          },
+        });
+
+        ctx.fetch<string>({
+          url: req.fragmentUrl,
+          type: "text",
+          signal: req.signal,
+          onError,
+          onDone(source) {
+            fragmentSource = source;
+            finish();
+          },
+        });
+      } else {
+        // Single combined WGSL file.
+        ctx.fetch<string>({
+          url: req.url!,
+          type: "text",
+          signal: req.signal,
+          onProgress: req.onProgress,
+          onError: req.onError,
+          async onDone(source, url) {
+            try {
+              const shader = await gfx.makeShader({
+                vertexSource: source,
+                fragmentSource: source,
+                label: req.label,
+              });
+              req.onDone(shader, url);
+            } catch (err) {
+              if (req.onError) req.onError(err instanceof Error ? err : new Error(String(err)), url);
+            }
+          },
+        });
+      }
     },
 
     batch(requests: FetchRequest<unknown>[], onAllDone: () => void): void {

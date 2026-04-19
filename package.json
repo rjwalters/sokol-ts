@@ -1,22 +1,54 @@
 {
-  "name": "loom-workspace",
-  "version": "1.0.0",
-  "description": "Loom-managed workspace with AI development orchestration",
-  "private": true,
+  "name": "sokol-ts",
+  "version": "0.1.0",
+  "description": "Sokol-inspired WebGPU rendering and app framework for TypeScript",
+  "license": "MIT",
+  "author": "rjwalters",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rjwalters/sokol-ts.git"
+  },
+  "keywords": ["webgpu", "sokol", "graphics", "typescript", "rendering"],
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/examples",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
   "scripts": {
     "dev": "vite examples/cube",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build",
     "worktree:return": "./.loom/scripts/worktree-return.sh",
     "check:ci": "npm run lint && npm run build",
-    "check:all": "echo 'No checks configured. Customize this script for your project.' && exit 0",
+    "check:all": "npm run lint && npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
-    "build": "tsc"
+    "docs": "typedoc"
+  },
+  "peerDependencies": {
+    "@webgpu/types": ">=0.1"
   },
   "devDependencies": {
-    "@webgpu/types": "^0.1.61",
+    "@webgpu/types": "^0.1.68",
+    "typedoc": "^0.28.19",
     "typescript": "^6.0.3",
     "vite": "^5.2.11",
     "vitest": "^4.1.4"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

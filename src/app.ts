@@ -1,6 +1,39 @@
+/**
+ * Application entry point and frame loop.
+ *
+ * @module
+ */
+
 import { type AppDesc, type AppEvent, AppEventType } from "./types.js";
 import { createGfx } from "./gfx.js";
 
+/**
+ * Start the application render loop.
+ *
+ * Initialises WebGPU (requesting an adapter and device unless one is provided
+ * in the descriptor), configures the canvas, wires up input event listeners,
+ * and begins the `requestAnimationFrame` loop.
+ *
+ * Returns a cleanup function that stops the loop, removes all event listeners,
+ * and destroys the GPU device (unless it was caller-provided).
+ *
+ * @param desc - Application descriptor with callbacks and configuration.
+ * @returns A cleanup function to tear down the application.
+ *
+ * @example
+ * ```ts
+ * import { run } from "sokol-ts";
+ *
+ * const cleanup = await run({
+ *   canvas: "#my-canvas",
+ *   init(gfx) { /\* create resources *\/ },
+ *   frame(gfx) { /\* draw *\/ },
+ * });
+ *
+ * // Later, to stop:
+ * cleanup();
+ * ```
+ */
 export async function run(desc: AppDesc): Promise<() => void> {
   const canvas = typeof desc.canvas === "string"
     ? document.querySelector<HTMLCanvasElement>(desc.canvas)!
@@ -216,11 +249,16 @@ export async function run(desc: AppDesc): Promise<() => void> {
     });
   }
 
-  // Gamepad connection events
+  // Gamepad support — only poll when at least one gamepad is connected
+  let gamepadConnected = false;
+
   listen(window, "gamepadconnected", (e) => {
+    gamepadConnected = true;
     dispatch({ type: AppEventType.GAMEPAD_CONNECTED, gamepadIndex: (e as GamepadEvent).gamepad.index });
   });
   listen(window, "gamepaddisconnected", (e) => {
+    const gamepads = navigator.getGamepads();
+    gamepadConnected = gamepads.some(gp => gp !== null);
     dispatch({ type: AppEventType.GAMEPAD_DISCONNECTED, gamepadIndex: (e as GamepadEvent).gamepad.index });
   });
 
@@ -298,7 +336,9 @@ export async function run(desc: AppDesc): Promise<() => void> {
     lastFrameMs = timestampMs;
     if (desc.eventQueue) flushEvents();
     resize();
-    pollGamepads();
+    if (gamepadConnected) {
+      pollGamepads();
+    }
     desc.preFrame?.(gfx);
     try {
       desc.frame(gfx);
