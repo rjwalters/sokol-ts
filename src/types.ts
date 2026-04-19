@@ -350,14 +350,30 @@ export interface FetchImageRequest {
   label?: string;
 }
 
-export interface FetchShaderRequest {
-  url: string;
+/** Base fields shared by both single-URL and split-URL shader requests. */
+interface FetchShaderRequestBase {
   signal?: AbortSignal;
   onProgress?: (p: FetchProgress) => void;
   onDone: (shader: SgShader, url: string) => void;
   onError?: (err: Error, url: string) => void;
   label?: string;
 }
+
+/** Single combined WGSL file (used for both vertex and fragment stages). */
+export interface FetchShaderSingleRequest extends FetchShaderRequestBase {
+  url: string;
+  vertexUrl?: undefined;
+  fragmentUrl?: undefined;
+}
+
+/** Separate vertex and fragment WGSL files, fetched in parallel. */
+export interface FetchShaderSplitRequest extends FetchShaderRequestBase {
+  url?: undefined;
+  vertexUrl: string;
+  fragmentUrl: string;
+}
+
+export type FetchShaderRequest = FetchShaderSingleRequest | FetchShaderSplitRequest;
 
 export interface FetchSetupDesc {
   maxConcurrent?: number;   // default 6, mirrors browser connection limits
