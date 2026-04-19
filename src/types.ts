@@ -215,6 +215,10 @@ export interface AppDesc {
   powerPreference?: "low-power" | "high-performance";
   requiredFeatures?: GPUFeatureName[];
   requiredLimits?: Record<string, number>;
+  /** Called just before cleanup during an HMR reload. Return any state to preserve across the reload. */
+  serializeState?: (gfx: Gfx) => unknown;
+  /** Called just after init during an HMR reload with the state returned by serializeState. */
+  restoreState?: (state: unknown, gfx: Gfx) => void;
   dpiIndependentCoords?: boolean; // default false; when true all event coords are in CSS pixels
   onError?: (err: unknown) => boolean | void;
   preFrame?: (gfx: Gfx) => void;

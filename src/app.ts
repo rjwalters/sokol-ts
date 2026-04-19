@@ -204,6 +204,7 @@ export async function run(desc: AppDesc): Promise<() => void> {
       target.removeEventListener(type, handler);
     }
     desc.cleanup?.(gfx);
+    context.unconfigure();
     if (!callerDevice) device.destroy();
   };
 }
