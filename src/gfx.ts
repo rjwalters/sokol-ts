@@ -6,6 +6,9 @@ import {
   FilterMode, WrapMode,
 } from "./types.js";
 
+/** Number of uniform ring-buffer slots to prevent CPU/GPU aliasing. */
+export const NUM_FRAMES_IN_FLIGHT = 2;
+
 // ---------------------------------------------------------------------------
 // Generation-counted handle encoding (matches Sokol's _sg_slot_t strategy)
 // ---------------------------------------------------------------------------
@@ -161,7 +164,6 @@ export function createGfx(
       `UNIFORM_BUFFER_SIZE (${UNIFORM_BUFFER_SIZE}) exceeds device limit maxUniformBufferBindingSize (${device.limits.maxUniformBufferBindingSize})`
     );
   }
-  const NUM_FRAMES_IN_FLIGHT = 2;
   let uniformFrameIndex = 0;
 
   // Shared bind group layout for the uniform ring buffers (group 0, binding 0, dynamic offset)
@@ -185,7 +187,7 @@ export function createGfx(
     uniformBuffers.push(buf);
     uniformBindGroups.push(device.createBindGroup({
       layout: uniformBindGroupLayout,
-      entries: [{ binding: 0, resource: { buffer: buf, size: 256 } }],
+      entries: [{ binding: 0, resource: { buffer: buf, size: UNIFORM_BUFFER_SIZE } }],
       label: `uniform_bind_group_${i}`,
     }));
   }
