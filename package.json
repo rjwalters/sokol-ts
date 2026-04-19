@@ -8,13 +8,15 @@
     "worktree:return": "./.loom/scripts/worktree-return.sh",
     "check:ci": "npm run lint && npm run build",
     "check:all": "echo 'No checks configured. Customize this script for your project.' && exit 0",
-    "test": "echo 'No tests configured. Customize this script for your project.' && exit 0",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "tsc --noEmit",
     "build": "tsc"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.61",
     "typescript": "^6.0.3",
-    "vite": "^5.2.11"
+    "vite": "^5.2.11",
+    "vitest": "^4.1.4"
   }
 }
