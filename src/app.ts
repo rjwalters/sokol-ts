@@ -334,6 +334,7 @@ export async function run(desc: AppDesc): Promise<() => void> {
     }
     desc.cleanup?.(gfx);
     context.unconfigure();
+    gfx.shutdown();
     if (!callerDevice) device.destroy();
   };
 }
