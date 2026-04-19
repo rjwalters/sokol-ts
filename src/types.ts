@@ -251,6 +251,7 @@ export interface Gfx {
   destroyPipeline(pip: SgPipeline): void;
 
   updateBuffer(buf: SgBuffer, data: ArrayBufferView): void;
+  writeImageBitmap(img: SgImage, bitmap: ImageBitmap): void;
 
   beginPass(desc?: PassDesc): void;
   applyPipeline(pip: SgPipeline): void;
@@ -312,6 +313,58 @@ export interface Audio {
   resume(): Promise<void>;
   setVolume(volume: number): void;
   shutdown(): void;
+}
+
+// ---- sfetch types ----
+
+export type FetchResponseType = "arraybuffer" | "text" | "json" | "image";
+
+export interface FetchProgress {
+  loaded: number;   // bytes received so far
+  total: number;    // Content-Length, or 0 if unknown
+  ratio: number;    // loaded/total, or 0 if unknown
+}
+
+export interface FetchRequest<T> {
+  url: string;
+  type: FetchResponseType;
+  priority?: number;           // higher = fetched first; default 0
+  signal?: AbortSignal;        // caller-supplied AbortController.signal
+  onProgress?: (p: FetchProgress) => void;
+  onDone: (result: T, url: string) => void;
+  onError?: (err: Error, url: string) => void;
+}
+
+export interface FetchImageRequest {
+  url: string;
+  signal?: AbortSignal;
+  onProgress?: (p: FetchProgress) => void;
+  onDone: (image: SgImage, url: string) => void;
+  onError?: (err: Error, url: string) => void;
+  label?: string;
+}
+
+export interface FetchShaderRequest {
+  url: string;
+  signal?: AbortSignal;
+  onProgress?: (p: FetchProgress) => void;
+  onDone: (shader: SgShader, url: string) => void;
+  onError?: (err: Error, url: string) => void;
+  label?: string;
+}
+
+export interface FetchSetupDesc {
+  maxConcurrent?: number;   // default 6, mirrors browser connection limits
+  cacheCapacity?: number;   // max number of cached responses; 0 = no cache
+}
+
+export interface SfetchContext {
+  fetch<T>(req: FetchRequest<T>): void;
+  fetchImage(gfx: Gfx, req: FetchImageRequest): void;
+  fetchShader(gfx: Gfx, req: FetchShaderRequest): void;
+  batch(requests: FetchRequest<unknown>[], onAllDone: () => void): void;
+  clearCache(): void;
+  cancelAll(): void;
 }
 
 export interface AppEvent {
