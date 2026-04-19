@@ -254,6 +254,7 @@ export interface Gfx {
   destroyShader(shd: SgShader): void;
   destroyPipeline(pip: SgPipeline): void;
 
+  isValid(handle: Handle): boolean;
   updateBuffer(buf: SgBuffer, data: ArrayBufferView): void;
   writeImageBitmap(img: SgImage, bitmap: ImageBitmap): void;
 
@@ -265,6 +266,7 @@ export interface Gfx {
   drawIndirect(indirectBuffer: SgBuffer, indirectOffset?: number): void;
   endPass(): void;
   commit(): void;
+  shutdown(): void;
 
   rebuildPipelinesForShader(shader: SgShader): Promise<void>;
 
