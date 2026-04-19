@@ -13,12 +13,210 @@ import {
   type SgBuffer, type SgImage, type SgSampler, type SgShader, type SgPipeline,
   type BufferDesc, type ImageDesc, type SamplerDesc, type ShaderDesc, type PipelineDesc,
   type Bindings, type PassDesc, type Gfx, type Handle, type DrawStats, type ShaderRecompileResult,
+  type TextureDimension,
   BufferUsage, IndexType, LoadAction, StoreAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
   FilterMode, WrapMode, BlendFactor, BlendOp, StencilOp,
 } from "./types.js";
 
 /** Number of uniform ring-buffer slots to prevent CPU/GPU aliasing. */
 export const NUM_FRAMES_IN_FLIGHT = 2;
+
+// ---------------------------------------------------------------------------
+// Format info helpers
+// ---------------------------------------------------------------------------
+
+interface FormatInfo {
+  bytesPerBlock: number;
+  blockWidth: number;
+  blockHeight: number;
+  isCompressed: boolean;
+  isDepth: boolean;
+}
+
+/** Returns per-texel (or per-block) size information for a given pixel format. */
+export function getFormatInfo(fmt: PixelFormat): FormatInfo {
+  switch (fmt) {
+    case PixelFormat.R8:                return { bytesPerBlock: 1,  blockWidth: 1, blockHeight: 1, isCompressed: false, isDepth: false };
+    case PixelFormat.RG8:               return { bytesPerBlock: 2,  blockWidth: 1, blockHeight: 1, isCompressed: false, isDepth: false };
+    case PixelFormat.RGBA8:             return { bytesPerBlock: 4,  blockWidth: 1, blockHeight: 1, isCompressed: false, isDepth: false };
+    case PixelFormat.BGRA8:             return { bytesPerBlock: 4,  blockWidth: 1, blockHeight: 1, isCompressed: false, isDepth: false };
+    case PixelFormat.RGBA16F:           return { bytesPerBlock: 8,  blockWidth: 1, blockHeight: 1, isCompressed: false, isDepth: false };
+    case PixelFormat.RGBA32F:           return { bytesPerBlock: 16, blockWidth: 1, blockHeight: 1, isCompressed: false, isDepth: false };
+    case PixelFormat.DEPTH24_STENCIL8:  return { bytesPerBlock: 4,  blockWidth: 1, blockHeight: 1, isCompressed: false, isDepth: true  };
+    case PixelFormat.DEPTH32F:          return { bytesPerBlock: 4,  blockWidth: 1, blockHeight: 1, isCompressed: false, isDepth: true  };
+    // BC formats (4x4 blocks)
+    case PixelFormat.BC1_RGBA:          return { bytesPerBlock: 8,  blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.BC3_RGBA:          return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.BC4_R:             return { bytesPerBlock: 8,  blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.BC5_RG:            return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.BC6H_RGB:          return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.BC7_RGBA:          return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    // ETC2 (4x4 blocks)
+    case PixelFormat.ETC2_RGB8:         return { bytesPerBlock: 8,  blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.ETC2_RGBA8:        return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    // ASTC
+    case PixelFormat.ASTC_4X4:          return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.ASTC_8X8:          return { bytesPerBlock: 16, blockWidth: 8, blockHeight: 8, isCompressed: true,  isDepth: false };
+    default:                            return { bytesPerBlock: 4,  blockWidth: 1, blockHeight: 1, isCompressed: false, isDepth: false };
+  }
+}
+
+/**
+ * Computes the bytes-per-row for a given format and width.
+ * No 256-byte alignment is applied because writeTexture does not require it.
+ */
+export function bytesPerRowForFormat(fmt: PixelFormat, width: number): number {
+  const info = getFormatInfo(fmt);
+  const blocksWide = Math.ceil(width / info.blockWidth);
+  return blocksWide * info.bytesPerBlock;
+}
+
+/** Compute the full mipmap level count for the given dimensions. */
+function maxMipLevels(width: number, height: number, depth = 1): number {
+  return 1 + Math.floor(Math.log2(Math.max(width, height, depth)));
+}
+
+/** Required GPU feature name for each compressed format family. */
+export function requiredFeatureForFormat(fmt: PixelFormat): GPUFeatureName | null {
+  switch (fmt) {
+    case PixelFormat.BC1_RGBA:
+    case PixelFormat.BC3_RGBA:
+    case PixelFormat.BC4_R:
+    case PixelFormat.BC5_RG:
+    case PixelFormat.BC6H_RGB:
+    case PixelFormat.BC7_RGBA:
+      return "texture-compression-bc";
+    case PixelFormat.ETC2_RGB8:
+    case PixelFormat.ETC2_RGBA8:
+      return "texture-compression-etc2";
+    case PixelFormat.ASTC_4X4:
+    case PixelFormat.ASTC_8X8:
+      return "texture-compression-astc";
+    default:
+      return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Mipmap generation via GPU blit passes
+// ---------------------------------------------------------------------------
+
+/** Mipmap WGSL shader source -- renders a fullscreen triangle sampling from the previous mip level. */
+const MIPMAP_WGSL = /* wgsl */`
+@group(0) @binding(0) var srcTexture: texture_2d<f32>;
+@group(0) @binding(1) var srcSampler: sampler;
+
+struct VSOutput {
+  @builtin(position) pos: vec4f,
+  @location(0) uv: vec2f,
+};
+
+@vertex fn vs_main(@builtin(vertex_index) vi: u32) -> VSOutput {
+  // Fullscreen triangle: 3 vertices covering clip-space [-1,1]
+  let uv = vec2f(f32((vi << 1u) & 2u), f32(vi & 2u));
+  var out: VSOutput;
+  out.pos = vec4f(uv * 2.0 - 1.0, 0.0, 1.0);
+  out.uv = vec2f(uv.x, 1.0 - uv.y);
+  return out;
+}
+
+@fragment fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
+  return textureSample(srcTexture, srcSampler, uv);
+}
+`;
+
+// Lazily cached pipeline/sampler -- created once per device.
+const mipmapPipelineCache = new WeakMap<GPUDevice, Map<GPUTextureFormat, GPURenderPipeline>>();
+const mipmapSamplerCache = new WeakMap<GPUDevice, GPUSampler>();
+
+function getMipmapPipeline(device: GPUDevice, format: GPUTextureFormat): GPURenderPipeline {
+  let formatMap = mipmapPipelineCache.get(device);
+  if (!formatMap) {
+    formatMap = new Map();
+    mipmapPipelineCache.set(device, formatMap);
+  }
+  let pip = formatMap.get(format);
+  if (!pip) {
+    const mod = device.createShaderModule({ code: MIPMAP_WGSL, label: "sokol_mipmap" });
+    pip = device.createRenderPipeline({
+      layout: "auto",
+      vertex: { module: mod, entryPoint: "vs_main" },
+      fragment: { module: mod, entryPoint: "fs_main", targets: [{ format }] },
+      primitive: { topology: "triangle-list" },
+      label: `sokol_mipmap_${format}`,
+    });
+    formatMap.set(format, pip);
+  }
+  return pip;
+}
+
+function getMipmapSampler(device: GPUDevice): GPUSampler {
+  let s = mipmapSamplerCache.get(device);
+  if (!s) {
+    s = device.createSampler({ minFilter: "linear", magFilter: "linear" });
+    mipmapSamplerCache.set(device, s);
+  }
+  return s;
+}
+
+/**
+ * Generates mipmaps for a texture by rendering each mip level from the
+ * previous level using a linear-sampled fullscreen triangle.
+ * Handles array layers and cube faces by iterating over all layers.
+ */
+function generateMipmaps(
+  device: GPUDevice,
+  texture: GPUTexture,
+  format: GPUTextureFormat,
+  mipLevelCount: number,
+  arrayLayerCount: number,
+): void {
+  const pipeline = getMipmapPipeline(device, format);
+  const sampler = getMipmapSampler(device);
+  const encoder = device.createCommandEncoder({ label: "sokol_mipmap_gen" });
+
+  for (let layer = 0; layer < arrayLayerCount; layer++) {
+    for (let level = 1; level < mipLevelCount; level++) {
+      const srcView = texture.createView({
+        baseMipLevel: level - 1,
+        mipLevelCount: 1,
+        baseArrayLayer: layer,
+        arrayLayerCount: 1,
+        dimension: "2d",
+      });
+      const dstView = texture.createView({
+        baseMipLevel: level,
+        mipLevelCount: 1,
+        baseArrayLayer: layer,
+        arrayLayerCount: 1,
+        dimension: "2d",
+      });
+
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: srcView },
+          { binding: 1, resource: sampler },
+        ],
+      });
+
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: dstView,
+          loadOp: "clear",
+          storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }],
+      });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.draw(3); // fullscreen triangle
+      pass.end();
+    }
+  }
+
+  device.queue.submit([encoder.finish()]);
+}
 
 // ---------------------------------------------------------------------------
 // Generation-counted handle encoding (matches Sokol's _sg_slot_t strategy)
@@ -362,26 +560,90 @@ export function createGfx(
     makeImage(desc: ImageDesc): SgImage {
       const id = imagePool.alloc();
       const fmt = (desc.format ?? PixelFormat.RGBA8) as GPUTextureFormat;
+      const fmtInfo = getFormatInfo(desc.format ?? PixelFormat.RGBA8);
+      const dim: TextureDimension = desc.dimension ?? "2d";
+      const is3D = dim === "3d";
+      const isCube = dim === "cube";
+
+      // Validate compressed format feature support
+      const requiredFeature = requiredFeatureForFormat(desc.format ?? PixelFormat.RGBA8);
+      if (requiredFeature && !device.features.has(requiredFeature)) {
+        throw new Error(
+          `[sokol-ts] Format "${desc.format}" requires device feature "${requiredFeature}" which is not available. ` +
+          `Request it via requiredFeatures in AppDesc.`
+        );
+      }
+
+      // Resolve depth/array layers
+      let depthOrArrayLayers: number;
+      if (isCube) {
+        depthOrArrayLayers = 6;
+      } else if (is3D) {
+        depthOrArrayLayers = desc.depth ?? 1;
+      } else {
+        depthOrArrayLayers = desc.numSlices ?? 1;
+      }
+
+      // Resolve mip level count
+      const canGenerateMips = !fmtInfo.isDepth && !is3D && !fmtInfo.isCompressed;
+      let mipLevelCount: number;
+      if (desc.numMipmaps === 0) {
+        // 0 = auto full chain
+        mipLevelCount = canGenerateMips ? maxMipLevels(desc.width, desc.height) : 1;
+      } else {
+        mipLevelCount = desc.numMipmaps ?? 1;
+      }
+
       let usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
       if (desc.renderTarget) {
         usage |= GPUTextureUsage.RENDER_ATTACHMENT;
       }
+      // Mipmap generation requires RENDER_ATTACHMENT on the texture
+      if (mipLevelCount > 1 && canGenerateMips) {
+        usage |= GPUTextureUsage.RENDER_ATTACHMENT;
+      }
+
+      const gpuDimension: GPUTextureDimension = is3D ? "3d" : "2d";
+
       const texture = device.createTexture({
-        size: { width: desc.width, height: desc.height },
+        size: { width: desc.width, height: desc.height, depthOrArrayLayers },
+        dimension: gpuDimension,
         format: fmt,
         usage,
+        mipLevelCount,
         sampleCount: desc.sampleCount ?? 1,
         label: desc.label,
       });
+
       if (desc.data) {
+        const bpr = bytesPerRowForFormat(desc.format ?? PixelFormat.RGBA8, desc.width);
         device.queue.writeTexture(
           { texture },
           desc.data,
-          { bytesPerRow: desc.width * 4 },
-          { width: desc.width, height: desc.height },
+          { bytesPerRow: bpr, rowsPerImage: desc.height },
+          { width: desc.width, height: desc.height, depthOrArrayLayers },
         );
       }
-      imagePool.set(id, { texture, view: texture.createView(), desc });
+
+      // Create the appropriate texture view
+      let viewDimension: GPUTextureViewDimension;
+      if (isCube) {
+        viewDimension = "cube";
+      } else if (is3D) {
+        viewDimension = "3d";
+      } else if ((desc.numSlices ?? 1) > 1) {
+        viewDimension = "2d-array";
+      } else {
+        viewDimension = "2d";
+      }
+      const view = texture.createView({ dimension: viewDimension });
+
+      // Auto-generate mipmaps if requested and supported
+      if (mipLevelCount > 1 && canGenerateMips && desc.data) {
+        generateMipmaps(device, texture, fmt, mipLevelCount, depthOrArrayLayers);
+      }
+
+      imagePool.set(id, { texture, view, desc });
       return { _brand: "SgImage", id } as SgImage;
     },
 
@@ -712,6 +974,21 @@ export function createGfx(
         { source: bitmap },
         { texture: slot.texture },
         [bitmap.width, bitmap.height],
+      );
+    },
+
+    updateImage(img: SgImage, data: ArrayBufferView, mipLevel = 0, arrayLayer = 0) {
+      const slot = imagePool.get(img.id);
+      if (!slot) throw new Error("Invalid image handle");
+      const d = slot.desc;
+      const mipWidth = Math.max(1, d.width >> mipLevel);
+      const mipHeight = Math.max(1, d.height >> mipLevel);
+      const bpr = bytesPerRowForFormat(d.format ?? PixelFormat.RGBA8, mipWidth);
+      device.queue.writeTexture(
+        { texture: slot.texture, mipLevel, origin: { x: 0, y: 0, z: arrayLayer } },
+        data,
+        { bytesPerRow: bpr, rowsPerImage: mipHeight },
+        { width: mipWidth, height: mipHeight },
       );
     },
 

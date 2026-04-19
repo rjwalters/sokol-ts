@@ -104,9 +104,22 @@ describe("PixelFormat", () => {
     expect(PixelFormat.RGBA32F).toBe("rgba32float");
   });
 
-  it("has exactly 8 members", () => {
+  it("maps compressed format strings correctly", () => {
+    expect(PixelFormat.BC1_RGBA).toBe("bc1-rgba-unorm");
+    expect(PixelFormat.BC3_RGBA).toBe("bc3-rgba-unorm");
+    expect(PixelFormat.BC4_R).toBe("bc4-r-unorm");
+    expect(PixelFormat.BC5_RG).toBe("bc5-rg-unorm");
+    expect(PixelFormat.BC6H_RGB).toBe("bc6h-rgb-ufloat");
+    expect(PixelFormat.BC7_RGBA).toBe("bc7-rgba-unorm");
+    expect(PixelFormat.ETC2_RGB8).toBe("etc2-rgb8unorm");
+    expect(PixelFormat.ETC2_RGBA8).toBe("etc2-rgba8unorm");
+    expect(PixelFormat.ASTC_4X4).toBe("astc-4x4-unorm");
+    expect(PixelFormat.ASTC_8X8).toBe("astc-8x8-unorm");
+  });
+
+  it("has exactly 18 members", () => {
     const values = Object.values(PixelFormat);
-    expect(values).toHaveLength(8);
+    expect(values).toHaveLength(18);
   });
 });
 
@@ -148,8 +161,8 @@ describe("AppEventType", () => {
     expect(AppEventType.TOUCH_END).toBe("touchend");
   });
 
-  it("has exactly 10 members", () => {
+  it("has exactly 22 members", () => {
     const values = Object.values(AppEventType);
-    expect(values).toHaveLength(10);
+    expect(values).toHaveLength(22);
   });
 });

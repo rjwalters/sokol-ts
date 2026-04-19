@@ -202,6 +202,17 @@ export enum PixelFormat {
   RGBA16F = "rgba16float",
   /** 32-bit RGBA float (16 bytes per pixel). */
   RGBA32F = "rgba32float",
+  // Block-compressed formats (require device feature "texture-compression-*")
+  BC1_RGBA = "bc1-rgba-unorm",
+  BC3_RGBA = "bc3-rgba-unorm",
+  BC4_R = "bc4-r-unorm",
+  BC5_RG = "bc5-rg-unorm",
+  BC6H_RGB = "bc6h-rgb-ufloat",
+  BC7_RGBA = "bc7-rgba-unorm",
+  ETC2_RGB8 = "etc2-rgb8unorm",
+  ETC2_RGBA8 = "etc2-rgba8unorm",
+  ASTC_4X4 = "astc-4x4-unorm",
+  ASTC_8X8 = "astc-8x8-unorm",
 }
 
 /**
@@ -246,6 +257,8 @@ export enum BufferUsage {
   INDIRECT  = 3,
 }
 
+export type TextureDimension = "2d" | "3d" | "cube";
+
 // ---------------------------------------------------------------------------
 // Desc structs -- all fields optional, defaults applied at creation
 // ---------------------------------------------------------------------------
@@ -268,6 +281,8 @@ export interface ImageDesc {
   width: number;
   /** Texture height in texels. */
   height: number;
+  /** Depth for 3D textures (default 1). */
+  depth?: number;
   /** Pixel format. Default: {@link PixelFormat.RGBA8}. */
   format?: PixelFormat;
   /** Initial pixel data to upload. */
@@ -276,6 +291,12 @@ export interface ImageDesc {
   renderTarget?: boolean;
   /** MSAA sample count. Must be 1 (no MSAA) or 4. Default: 1. */
   sampleCount?: 1 | 4;
+  /** Texture dimension: "2d" (default), "3d", or "cube". */
+  dimension?: TextureDimension;
+  /** Number of mipmaps. 0 = auto-generate full chain, 1 = no mipmaps (default). */
+  numMipmaps?: number;
+  /** Number of array layers for 2D array textures (default 1). Ignored for "cube" (always 6). */
+  numSlices?: number;
   /** Debug label for GPU debugging tools. */
   label?: string;
 }
@@ -654,6 +675,15 @@ export interface Gfx {
    * @param dstOffset - Optional byte offset into the destination buffer.
    */
   updateBuffer(buf: SgBuffer, data: ArrayBufferView, dstOffset?: number): void;
+
+  /**
+   * Upload new data to an existing image (texture).
+   * @param img - Target image handle.
+   * @param data - Pixel data to upload.
+   * @param mipLevel - Mip level to write to. Default: 0.
+   * @param arrayLayer - Array layer to write to. Default: 0.
+   */
+  updateImage(img: SgImage, data: ArrayBufferView, mipLevel?: number, arrayLayer?: number): void;
   writeImageBitmap(img: SgImage, bitmap: ImageBitmap): void;
 
   /**
