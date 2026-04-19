@@ -104,6 +104,10 @@ npm run docs            # generate TypeDoc API docs
 - **Build**: Node >= 18, TypeScript >= 5
 - **Peer dependency**: `@webgpu/types >= 0.1`
 
+## Built with Loom
+
+This library was developed using [Loom](https://github.com/rjwalters/loom), an AI-powered development orchestration system. Loom managed the full lifecycle -- issue decomposition, parallel agent builds, automated code review, and merge coordination -- across 38 PRs.
+
 ## License
 
 [MIT](LICENSE)
