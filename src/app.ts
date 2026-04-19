@@ -1,6 +1,39 @@
+/**
+ * Application entry point and frame loop.
+ *
+ * @module
+ */
+
 import { type AppDesc, type AppEvent, AppEventType } from "./types.js";
 import { createGfx } from "./gfx.js";
 
+/**
+ * Start the application render loop.
+ *
+ * Initialises WebGPU (requesting an adapter and device unless one is provided
+ * in the descriptor), configures the canvas, wires up input event listeners,
+ * and begins the `requestAnimationFrame` loop.
+ *
+ * Returns a cleanup function that stops the loop, removes all event listeners,
+ * and destroys the GPU device (unless it was caller-provided).
+ *
+ * @param desc - Application descriptor with callbacks and configuration.
+ * @returns A cleanup function to tear down the application.
+ *
+ * @example
+ * ```ts
+ * import { run } from "sokol-ts";
+ *
+ * const cleanup = await run({
+ *   canvas: "#my-canvas",
+ *   init(gfx) { /\* create resources *\/ },
+ *   frame(gfx) { /\* draw *\/ },
+ * });
+ *
+ * // Later, to stop:
+ * cleanup();
+ * ```
+ */
 export async function run(desc: AppDesc): Promise<() => void> {
   const canvas = typeof desc.canvas === "string"
     ? document.querySelector<HTMLCanvasElement>(desc.canvas)!

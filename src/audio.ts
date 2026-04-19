@@ -1,6 +1,16 @@
+/**
+ * Audio playback via AudioWorklet.
+ *
+ * Provides a callback-driven audio pipeline similar to `sokol_audio.h`.
+ * Audio is rendered in an AudioWorklet thread; the main thread fills an
+ * interleaved sample buffer each quantum via the user-supplied callback.
+ *
+ * @module
+ */
+
 import { type AudioDesc, type Audio } from "./types.js";
 
-// AudioWorklet processor source — runs in the audio rendering thread.
+// AudioWorklet processor source -- runs in the audio rendering thread.
 // The main thread sends filled channel buffers back in response to 'request' messages.
 const PROCESSOR_SOURCE = `
 class SokolProcessor extends AudioWorkletProcessor {
@@ -33,6 +43,30 @@ class SokolProcessor extends AudioWorkletProcessor {
 registerProcessor('sokol-processor', SokolProcessor);
 `;
 
+/**
+ * Create an {@link Audio} playback instance.
+ *
+ * Sets up an `AudioContext` with an AudioWorklet processor that calls the
+ * provided {@link AudioDesc.streamCallback | streamCallback} each audio
+ * quantum to fill the output buffer. The audio context automatically
+ * suspends when the page is hidden and resumes when visible.
+ *
+ * @param desc - Audio configuration and stream callback.
+ * @returns A promise that resolves to an {@link Audio} instance once the
+ *   AudioWorklet module is loaded.
+ *
+ * @example
+ * ```ts
+ * import { createAudio } from "sokol-ts";
+ *
+ * const audio = await createAudio({
+ *   numChannels: 2,
+ *   streamCallback(buffer, numFrames, numChannels) {
+ *     // Fill buffer with interleaved samples
+ *   },
+ * });
+ * ```
+ */
 export async function createAudio(desc: AudioDesc): Promise<Audio> {
   const numChannels = desc.numChannels ?? 2;
   const bufferFrames = desc.bufferFrames ?? 128;
