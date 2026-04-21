@@ -412,6 +412,7 @@ export function createGfx(
   let passEncoder: GPURenderPassEncoder | null = null;
   let computePassEncoder: GPUComputePassEncoder | null = null;
   let currentComputePipeline: ComputePipelineSlot | null = null;
+  let currentComputePipelineId = 0;
   let currentPipeline: PipelineSlot | null = null;
   let currentPipelineId = 0;
   let frameTime = 0;
@@ -424,6 +425,9 @@ export function createGfx(
 
   // Texture/sampler bind group cache (group 1): keyed on "pipelineId:img1,img2,...:smp1,smp2,..."
   const textureSamplerBindGroupCache = new Map<string, GPUBindGroup>();
+
+  // Compute bind group cache: keyed on "computePipelineId:sbuf1,sbuf2,..."
+  const computeBindGroupCache = new Map<string, GPUBindGroup>();
 
   const DEFAULT_UNIFORM_BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB, matching upstream sokol-C
   const UNIFORM_BUFFER_SIZE = options?.uniformBufferSize ?? DEFAULT_UNIFORM_BUFFER_SIZE;
@@ -593,11 +597,35 @@ export function createGfx(
     }
   }
 
+  function invalidateComputeCacheForBuffer(resourceId: number) {
+    // Compute cache keys have the form "computePipelineId:sbuf1,sbuf2,..."
+    const idStr = String(resourceId);
+    for (const key of computeBindGroupCache.keys()) {
+      const colonIdx = key.indexOf(":");
+      const segment = key.substring(colonIdx + 1);
+      if (segment) {
+        const ids = segment.split(",");
+        if (ids.includes(idStr)) {
+          computeBindGroupCache.delete(key);
+        }
+      }
+    }
+  }
+
   function invalidateCachesForPipeline(pipelineId: number) {
     const prefix = `${pipelineId}:`;
     for (const key of textureSamplerBindGroupCache.keys()) {
       if (key.startsWith(prefix)) {
         textureSamplerBindGroupCache.delete(key);
+      }
+    }
+  }
+
+  function invalidateComputeCacheForPipeline(pipelineId: number) {
+    const prefix = `${pipelineId}:`;
+    for (const key of computeBindGroupCache.keys()) {
+      if (key.startsWith(prefix)) {
+        computeBindGroupCache.delete(key);
       }
     }
   }
@@ -1064,6 +1092,7 @@ export function createGfx(
     destroyBuffer(buf: SgBuffer) {
       // Invalidate any cached bind groups referencing this buffer as a storage buffer
       invalidateTextureSamplerCacheForResource(buf.id, "sbuf");
+      invalidateComputeCacheForBuffer(buf.id);
       const slot = bufferPool.free(buf.id);
       if (slot) slot.gpu.destroy();
     },
@@ -1102,6 +1131,7 @@ export function createGfx(
       pipelinePool.free(pip.id);
     },
     destroyComputePipeline(pip: SgPipeline) {
+      invalidateComputeCacheForPipeline(pip.id);
       computePipelinePool.free(pip.id);
     },
 
@@ -1205,6 +1235,9 @@ export function createGfx(
     },
 
     shutdown() {
+      textureSamplerBindGroupCache.clear();
+      computeBindGroupCache.clear();
+
       for (const slot of bufferPool.liveResources())   { slot.gpu.destroy(); }
       for (const slot of imagePool.liveResources())    { slot.texture.destroy(); }
       for (const slot of querySetPool.liveResources()) { slot.gpu.destroy(); }
@@ -1530,6 +1563,7 @@ export function createGfx(
       if (!slot || !computePassEncoder) throw new Error("Invalid compute pipeline or no active compute pass");
       computePassEncoder.setPipeline(slot.gpu);
       currentComputePipeline = slot;
+      currentComputePipelineId = pip.id;
     },
 
     applyComputeBindings(bind: ComputeBindings) {
@@ -1540,16 +1574,25 @@ export function createGfx(
         if (!currentComputePipeline.storageBindGroupLayout) {
           throw new Error("Compute pipeline has no storage buffer bindings configured");
         }
-        const entries: GPUBindGroupEntry[] = [];
-        for (let i = 0; i < storageHandles.length; i++) {
-          const buf = bufferPool.get(storageHandles[i].id);
-          if (!buf) throw new Error(`Invalid storage buffer at binding ${i}`);
-          entries.push({ binding: i, resource: { buffer: buf.gpu } });
+
+        // Build cache key from compute pipeline id + storage buffer ids
+        const sbufIds = storageHandles.map(h => h.id).join(",");
+        const cacheKey = `${currentComputePipelineId}:${sbufIds}`;
+
+        let bg = computeBindGroupCache.get(cacheKey);
+        if (!bg) {
+          const entries: GPUBindGroupEntry[] = [];
+          for (let i = 0; i < storageHandles.length; i++) {
+            const buf = bufferPool.get(storageHandles[i].id);
+            if (!buf) throw new Error(`Invalid storage buffer at binding ${i}`);
+            entries.push({ binding: i, resource: { buffer: buf.gpu } });
+          }
+          bg = device.createBindGroup({
+            layout: currentComputePipeline.storageBindGroupLayout,
+            entries,
+          });
+          computeBindGroupCache.set(cacheKey, bg);
         }
-        const bg = device.createBindGroup({
-          layout: currentComputePipeline.storageBindGroupLayout,
-          entries,
-        });
         // Storage buffers go to group 1 if uniforms are used, group 0 otherwise
         const groupIndex = currentComputePipeline.desc.uniforms ? 1 : 0;
         computePassEncoder.setBindGroup(groupIndex, bg);
@@ -1579,6 +1622,7 @@ export function createGfx(
         computePassEncoder.end();
         computePassEncoder = null;
         currentComputePipeline = null;
+        currentComputePipelineId = 0;
       }
     },
 
