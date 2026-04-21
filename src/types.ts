@@ -11,19 +11,44 @@
 // Resource handles -- thin wrappers for type safety
 // ---------------------------------------------------------------------------
 
-/** Opaque handle to a GPU buffer resource. */
+/**
+ * Opaque handle to a GPU buffer resource.
+ *
+ * @remarks Handles are manually managed. Call {@link Gfx.destroyBuffer} when
+ * the buffer is no longer needed to free the pool slot and GPU memory.
+ */
 export interface SgBuffer { readonly _brand: "SgBuffer"; readonly id: number }
 
-/** Opaque handle to a GPU image (texture) resource. */
+/**
+ * Opaque handle to a GPU image (texture) resource.
+ *
+ * @remarks Handles are manually managed. Call {@link Gfx.destroyImage} when
+ * the image is no longer needed to free the pool slot and GPU memory.
+ */
 export interface SgImage { readonly _brand: "SgImage"; readonly id: number }
 
-/** Opaque handle to a GPU sampler resource. */
+/**
+ * Opaque handle to a GPU sampler resource.
+ *
+ * @remarks Handles are manually managed. Call {@link Gfx.destroySampler} when
+ * the sampler is no longer needed to free the pool slot.
+ */
 export interface SgSampler { readonly _brand: "SgSampler"; readonly id: number }
 
-/** Opaque handle to a compiled shader resource. */
+/**
+ * Opaque handle to a compiled shader resource.
+ *
+ * @remarks Handles are manually managed. Call {@link Gfx.destroyShader} when
+ * the shader is no longer needed to free the pool slot.
+ */
 export interface SgShader { readonly _brand: "SgShader"; readonly id: number }
 
-/** Opaque handle to a render pipeline resource. */
+/**
+ * Opaque handle to a render pipeline resource.
+ *
+ * @remarks Handles are manually managed. Call {@link Gfx.destroyPipeline} when
+ * the pipeline is no longer needed to free the pool slot.
+ */
 export interface SgPipeline { readonly _brand: "SgPipeline"; readonly id: number }
 
 /** Union of all GPU resource handle types. */
@@ -580,6 +605,7 @@ export interface Gfx {
    * Create a GPU buffer.
    * @param desc - Buffer descriptor.
    * @returns An opaque buffer handle.
+   * @remarks Caller must call {@link destroyBuffer} when the buffer is no longer needed.
    */
   makeBuffer(desc: BufferDesc): SgBuffer;
 
@@ -587,6 +613,7 @@ export interface Gfx {
    * Create a GPU image (texture).
    * @param desc - Image descriptor.
    * @returns An opaque image handle.
+   * @remarks Caller must call {@link destroyImage} when the image is no longer needed.
    */
   makeImage(desc: ImageDesc): SgImage;
 
@@ -594,6 +621,7 @@ export interface Gfx {
    * Create a GPU sampler.
    * @param desc - Sampler descriptor.
    * @returns An opaque sampler handle.
+   * @remarks Caller must call {@link destroySampler} when the sampler is no longer needed.
    */
   makeSampler(desc: SamplerDesc): SgSampler;
 
@@ -604,6 +632,7 @@ export interface Gfx {
    *
    * @param desc - Shader descriptor with WGSL source.
    * @returns An opaque shader handle.
+   * @remarks Caller must call {@link destroyShader} when the shader is no longer needed.
    */
   makeShader(desc: ShaderDesc): Promise<SgShader>;
 
@@ -611,6 +640,7 @@ export interface Gfx {
    * Create a render pipeline.
    * @param desc - Pipeline descriptor.
    * @returns An opaque pipeline handle.
+   * @remarks Caller must call {@link destroyPipeline} when the pipeline is no longer needed.
    */
   makePipeline(desc: PipelineDesc): SgPipeline;
 
@@ -715,6 +745,10 @@ export interface Gfx {
    * alignment (WebGPU requirement for dynamic offsets).
    *
    * @param data - Uniform data to upload.
+   * @remarks Each call reserves `Math.max(data.byteLength, 256)` bytes,
+   * rounded up to the next 256-byte boundary. The 64 KB per-frame budget
+   * therefore allows at most 256 uniform calls per frame at minimum size.
+   * Exceeding this budget throws at runtime.
    */
   applyUniforms(data: ArrayBufferView): void;
 
