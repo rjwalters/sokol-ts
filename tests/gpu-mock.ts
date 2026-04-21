@@ -145,6 +145,27 @@ class MockGPURenderPipeline {
 }
 
 // ---------------------------------------------------------------------------
+// Mock GPU query set
+// ---------------------------------------------------------------------------
+
+class MockGPUQuerySet {
+  readonly type: string;
+  readonly count: number;
+  readonly label?: string;
+  destroyed = false;
+
+  constructor(desc: GPUQuerySetDescriptor) {
+    this.type = desc.type;
+    this.count = desc.count;
+    this.label = desc.label;
+  }
+
+  destroy(): void {
+    this.destroyed = true;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Mock GPU render pass encoder
 // ---------------------------------------------------------------------------
 
@@ -167,8 +188,29 @@ class MockGPURenderPassEncoder {
 // ---------------------------------------------------------------------------
 
 class MockGPUCommandEncoder {
-  beginRenderPass(_desc: GPURenderPassDescriptor): MockGPURenderPassEncoder {
+  /** Tracks resolveQuerySet calls for test assertions. */
+  resolveQuerySetCalls: Array<{
+    querySet: MockGPUQuerySet;
+    firstQuery: number;
+    queryCount: number;
+    destination: MockGPUBuffer;
+    destinationOffset: number;
+  }> = [];
+  /** Tracks the last render pass descriptor for test assertions. */
+  lastRenderPassDesc: GPURenderPassDescriptor | null = null;
+
+  beginRenderPass(desc: GPURenderPassDescriptor): MockGPURenderPassEncoder {
+    this.lastRenderPassDesc = desc;
     return new MockGPURenderPassEncoder();
+  }
+  resolveQuerySet(
+    querySet: MockGPUQuerySet,
+    firstQuery: number,
+    queryCount: number,
+    destination: MockGPUBuffer,
+    destinationOffset: number,
+  ): void {
+    this.resolveQuerySetCalls.push({ querySet, firstQuery, queryCount, destination, destinationOffset });
   }
   finish(): MockGPUCommandBuffer {
     return new MockGPUCommandBuffer();
@@ -207,11 +249,12 @@ class MockGPUQueue {
 // Mock GPUDevice
 // ---------------------------------------------------------------------------
 
-export function createMockDevice(): GPUDevice {
+export function createMockDevice(): GPUDevice & { _lastEncoder: MockGPUCommandEncoder | null } {
   const queue = new MockGPUQueue();
 
   const device = {
     queue,
+    _lastEncoder: null as MockGPUCommandEncoder | null,
     features: new Set<string>(),
     limits: {
       maxUniformBufferBindingSize: 65536,
@@ -243,10 +286,15 @@ export function createMockDevice(): GPUDevice {
     async createRenderPipelineAsync(desc: GPURenderPipelineDescriptor): Promise<MockGPURenderPipeline> {
       return new MockGPURenderPipeline(desc);
     },
-    createCommandEncoder(_desc?: GPUCommandEncoderDescriptor): MockGPUCommandEncoder {
-      return new MockGPUCommandEncoder();
+    createQuerySet(desc: GPUQuerySetDescriptor): MockGPUQuerySet {
+      return new MockGPUQuerySet(desc);
     },
-  } as unknown as GPUDevice;
+    createCommandEncoder(_desc?: GPUCommandEncoderDescriptor): MockGPUCommandEncoder {
+      const enc = new MockGPUCommandEncoder();
+      device._lastEncoder = enc;
+      return enc;
+    },
+  } as unknown as GPUDevice & { _lastEncoder: MockGPUCommandEncoder | null };
 
   return device;
 }
