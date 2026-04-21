@@ -9,7 +9,7 @@ sokol-ts wraps the WebGPU API in a thin, Sokol-style interface: branded resource
 | Module | Import | Description |
 |--------|--------|-------------|
 | **app** | `run(desc)` | Canvas setup, WebGPU init, input events, frame loop |
-| **gfx** | `createGfx(...)` | Resource creation (buffers, images, shaders, pipelines), draw commands, bind group & pipeline caching |
+| **gfx** | `createGfx(...)` | Resource creation (buffers, images, shaders, pipelines), render and compute commands, bind group & pipeline caching |
 | **stm** | `createStm()` | High-precision timing (mirrors `sokol_time.h`) |
 | **audio** | `createAudio(desc)` | Callback-driven audio via AudioWorklet (mirrors `sokol_audio.h`) |
 | **fetch** | `createSfetch(gfx)` | Async asset loading for images, shaders, and binary data |
@@ -62,6 +62,7 @@ Run any example with Vite:
 npm run dev                       # cube (default)
 npx vite examples/triangle        # hello triangle
 npx vite examples/instancing      # 64 instanced triangles
+npx vite examples/benchmark       # draw-call saturation benchmark
 ```
 
 | Example | What it shows |
@@ -69,16 +70,20 @@ npx vite examples/instancing      # 64 instanced triangles
 | [triangle](examples/triangle/) | Minimal vertex buffer + WGSL shader |
 | [instancing](examples/instancing/) | Per-instance attributes, step mode |
 | [cube](examples/cube/) | Depth buffer, index buffer, MVP uniforms, resize handling |
+| [benchmark](examples/benchmark/) | Draw-call saturation with multi-pass batching |
 
 ## Features
 
-- **Branded resource handles** -- `SgBuffer`, `SgImage`, `SgShader`, `SgPipeline`, `SgSampler` with generation-counted IDs for use-after-free detection
+- **Branded resource handles** -- `SgBuffer`, `SgImage`, `SgShader`, `SgPipeline`, `SgSampler`, `SgQuerySet` with generation-counted IDs for use-after-free detection
 - **Pool-based resource management** with automatic slot recycling
-- **Ring-buffered uniforms** with 256-byte aligned double buffering
-- **Bind group and pipeline caching** for zero-allocation hot paths
+- **Ring-buffered uniforms** with 256-byte aligned double buffering (configurable size, 4 MB default)
+- **Bind group and pipeline caching** for zero-allocation render and compute hot paths
+- **Compute shaders** -- compute pipeline creation, dispatch, indirect dispatch, and storage buffer bindings
+- **Storage buffers** with read and read-write access modes
+- **Timestamp queries** for GPU profiling with feature-gate enforcement
 - **Configurable blend, stencil, and MSAA** support
-- **Mipmap generation** with 2D, array, and cube texture support
-- **Compressed texture formats** (BC, ETC2, ASTC)
+- **Mipmap generation** with 2D, array, cube, and cube-array texture support
+- **Compressed texture formats** (BC, ETC2, ASTC) with sRGB variants
 - **Async shader compilation** with hot-reload via `rebuildPipeline()`
 - **Input events** -- keyboard, mouse, touch, pointer lock, gamepad, drag-drop, DPI change detection
 - **High-precision timing** -- lap timer, delta, rolling averages
@@ -91,7 +96,7 @@ npx vite examples/instancing      # 64 instanced triangles
 
 ### Handle lifetime is manual
 
-`makeBuffer()`, `makeImage()`, `makeSampler()`, `makeShader()`, and `makePipeline()` each allocate a slot in a fixed-size pool (64 to 128 entries depending on resource type). These slots are **not** garbage-collected -- you must call the matching `destroy*()` method when a resource is no longer needed. Leaking handles eventually exhausts the pool, which throws at runtime. `shutdown()` destroys all live resources and logs warnings for any that were not explicitly released, but relying on shutdown for cleanup is not a substitute for proper lifetime management.
+`makeBuffer()`, `makeImage()`, `makeSampler()`, `makeShader()`, `makePipeline()`, `makeComputeShader()`, `makeComputePipeline()`, and `makeQuerySet()` each allocate a slot in a fixed-size pool (32 to 128 entries depending on resource type). These slots are **not** garbage-collected -- you must call the matching `destroy*()` method when a resource is no longer needed. Leaking handles eventually exhausts the pool, which throws at runtime. `shutdown()` destroys all live resources and logs warnings for any that were not explicitly released, but relying on shutdown for cleanup is not a substitute for proper lifetime management.
 
 ```typescript
 const buf = gfx.makeBuffer({ data: vertices });
@@ -101,7 +106,7 @@ gfx.destroyBuffer(buf); // free the pool slot and GPU memory
 
 ### Uniform buffer 256-byte alignment
 
-Each `applyUniforms(data)` call writes into a shared 64 KB ring buffer that is reset every frame. Writes are aligned to 256-byte boundaries (the WebGPU `minUniformBufferOffsetAlignment` requirement), so every call reserves at least 256 bytes regardless of the actual data size. This means at most 256 uniform calls can fit in a single frame (`65 536 / 256 = 256`). If you exceed this budget the library will throw. Keep uniform data small and batch where possible.
+Each `applyUniforms(data)` call writes into a shared ring buffer (4 MB by default, configurable via `uniformBufferSize` in `AppDesc`) that is reset every frame. Writes are aligned to 256-byte boundaries (the WebGPU `minUniformBufferOffsetAlignment` requirement), so every call reserves at least 256 bytes regardless of the actual data size. With the default 4 MB buffer, up to 16,384 uniform calls fit per frame. If you exceed this budget the library will throw. Keep uniform data small and batch where possible.
 
 ## Development
 
@@ -122,7 +127,7 @@ npm run docs            # generate TypeDoc API docs
 
 ## Built with Loom
 
-This library was developed using [Loom](https://github.com/rjwalters/loom), an AI-powered development orchestration system. Loom managed the full lifecycle -- issue decomposition, parallel agent builds, automated code review, and merge coordination -- across 38 PRs.
+This library was developed using [Loom](https://github.com/rjwalters/loom), an AI-powered development orchestration system. Loom managed the full lifecycle -- issue decomposition, parallel agent builds, automated code review, and merge coordination -- across 52 PRs.
 
 ## License
 
