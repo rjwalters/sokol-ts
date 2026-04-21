@@ -296,18 +296,63 @@ describe("Compute: DrawStats.dispatchCalls", () => {
     gfx.dispatchWorkgroups(1, 1, 1);
     gfx.endPass();
 
-    // frameStats snapshot should reflect 3 dispatches
-    // Note: beginPass resets stats, but beginComputePass does not reset them
-    // directly. The stats are reset at the first beginPass or stay accumulated.
+    // frameStats accumulates across all passes within a frame;
+    // stats are reset in commit(), not beginPass().
     const stats = gfx.frameStats;
     expect(stats.dispatchCalls).toBe(3);
   });
 
-  it("starts dispatchCalls at zero", () => {
+  it("starts dispatchCalls at zero after commit", () => {
     const gfx = makeGfx();
-    // After beginPass (which resets stats), dispatchCalls should be 0
+    // After commit() resets stats, dispatchCalls should be 0
+    gfx.beginComputePass();
+    gfx.endPass();
+    gfx.commit();
+    expect(gfx.frameStats.dispatchCalls).toBe(0);
+  });
+
+  it("accumulates dispatch and draw stats across compute and render passes", async () => {
+    const gfx = makeGfx();
+    const compShd = await gfx.makeComputeShader({
+      source: "@compute @workgroup_size(64) fn cs_main() {}",
+    });
+    const compPip = gfx.makeComputePipeline({ shader: compShd, storageBuffers: 1 });
+    const buf = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE });
+
+    // Compute pass: 2 dispatches
+    gfx.beginComputePass();
+    gfx.applyComputePipeline(compPip);
+    gfx.applyComputeBindings({ storageBuffers: [buf] });
+    gfx.dispatchWorkgroups(4);
+    gfx.dispatchWorkgroups(8);
+    gfx.endPass();
+
+    // Render pass: dispatch stats must survive beginPass
     gfx.beginPass();
     gfx.endPass();
-    expect(gfx.frameStats.dispatchCalls).toBe(0);
+
+    const stats = gfx.frameStats;
+    expect(stats.dispatchCalls).toBe(2);
+    expect(stats.drawCalls).toBe(0);
+  });
+
+  it("resets all stats to zero after commit", async () => {
+    const gfx = makeGfx();
+    const shd = await gfx.makeComputeShader({
+      source: "@compute @workgroup_size(64) fn cs_main() {}",
+    });
+    const pip = gfx.makeComputePipeline({ shader: shd });
+
+    gfx.beginComputePass();
+    gfx.applyComputePipeline(pip);
+    gfx.dispatchWorkgroups(1);
+    gfx.endPass();
+    gfx.commit();
+
+    const stats = gfx.frameStats;
+    expect(stats.dispatchCalls).toBe(0);
+    expect(stats.drawCalls).toBe(0);
+    expect(stats.totalElements).toBe(0);
+    expect(stats.indirectDrawCalls).toBe(0);
   });
 });

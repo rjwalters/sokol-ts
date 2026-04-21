@@ -1330,7 +1330,6 @@ export function createGfx(
       passEncoder = encoder.beginRenderPass(passDescGpu);
       boundVertexBuffers = [];
       boundIndexBuffer = null;
-      _frameStats = { drawCalls: 0, totalElements: 0, indirectDrawCalls: 0, dispatchCalls: 0 };
     },
 
     applyPipeline(pip: SgPipeline) {
@@ -1587,6 +1586,7 @@ export function createGfx(
       frameTime = (now - lastFrameTime) / 1000;
       lastFrameTime = now;
       _frameCount++;
+      _frameStats = { drawCalls: 0, totalElements: 0, indirectDrawCalls: 0, dispatchCalls: 0 };
     },
 
     async rebuildPipelinesForShader(shader: SgShader): Promise<void> {
