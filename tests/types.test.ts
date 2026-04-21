@@ -144,6 +144,9 @@ describe("BufferUsage", () => {
     expect(BufferUsage.DYNAMIC).toBe(1);
     expect(BufferUsage.STREAM).toBe(2);
     expect(BufferUsage.INDIRECT).toBe(3);
+    expect(BufferUsage.QUERY_RESOLVE).toBe(4);
+    expect(BufferUsage.STAGING).toBe(5);
+    expect(BufferUsage.STORAGE).toBe(6);
   });
 });
 

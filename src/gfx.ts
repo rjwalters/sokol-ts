@@ -466,6 +466,8 @@ export function createGfx(
       images: desc.images,
       imageViewDimensions: desc.imageViewDimensions,
       samplerCount: desc.samplerCount,
+      storageBuffers: desc.storageBuffers,
+      storageBufferAccess: desc.storageBufferAccess,
       multisample: desc.multisample,
     });
   }
@@ -484,6 +486,8 @@ export function createGfx(
         return GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC;
       case BufferUsage.STAGING:
         return GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ;
+      case BufferUsage.STORAGE:
+        return GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
       default:
         return GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
     }
@@ -535,12 +539,13 @@ export function createGfx(
   // ---------------------------------------------------------------------------
 
   // Cache invalidation helpers
-  function invalidateTextureSamplerCacheForResource(resourceId: number, kind: "img" | "smp") {
-    // Cache keys have the form "pipelineId:img1,img2,...:smp1,smp2,..."
+  function invalidateTextureSamplerCacheForResource(resourceId: number, kind: "img" | "smp" | "sbuf") {
+    // Cache keys have the form "pipelineId:img1,img2,...:smp1,smp2,...:sbuf1,sbuf2,..."
     // We need to find entries that reference this resource in the appropriate segment.
+    const segmentIndex = kind === "img" ? 1 : kind === "smp" ? 2 : 3;
     for (const key of textureSamplerBindGroupCache.keys()) {
       const parts = key.split(":");
-      const segment = kind === "img" ? parts[1] : parts[2];
+      const segment = parts[segmentIndex];
       if (segment) {
         const ids = segment.split(",");
         if (ids.includes(String(resourceId))) {
@@ -788,12 +793,14 @@ export function createGfx(
       // Group 0: uniform buffer (always present) — reuse the shared layout
       bindGroupLayouts.push(uniformBindGroupLayout);
 
-      // Group 1: textures + samplers (if any)
+      // Group 1: textures + samplers + storage buffers (if any)
       // Texture bindings occupy locations 0..images-1;
-      // sampler bindings occupy locations images..images+samplerCount-1.
+      // sampler bindings occupy locations images..images+samplerCount-1;
+      // storage buffer bindings occupy locations images+samplerCount..images+samplerCount+storageBufferCount-1.
       const imageCount = desc.images ?? 0;
       const samplerCount = desc.samplerCount ?? 0;
-      if (imageCount > 0 || samplerCount > 0) {
+      const storageBufferCount = desc.storageBuffers ?? 0;
+      if (imageCount > 0 || samplerCount > 0 || storageBufferCount > 0) {
         const group1Entries: GPUBindGroupLayoutEntry[] = [];
         for (let i = 0; i < imageCount; i++) {
           const viewDim = desc.imageViewDimensions?.[i];
@@ -808,6 +815,15 @@ export function createGfx(
             binding: imageCount + i,
             visibility: GPUShaderStage.FRAGMENT,
             sampler: {},
+          });
+        }
+        const storageBindingBase = imageCount + samplerCount;
+        for (let i = 0; i < storageBufferCount; i++) {
+          const accessType = desc.storageBufferAccess?.[i] ?? "storage";
+          group1Entries.push({
+            binding: storageBindingBase + i,
+            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+            buffer: { type: accessType as GPUBufferBindingType },
           });
         }
         bindGroupLayouts.push(device.createBindGroupLayout({ entries: group1Entries }));
@@ -942,6 +958,8 @@ export function createGfx(
     },
 
     destroyBuffer(buf: SgBuffer) {
+      // Invalidate any cached bind groups referencing this buffer as a storage buffer
+      invalidateTextureSamplerCacheForResource(buf.id, "sbuf");
       const slot = bufferPool.free(buf.id);
       if (slot) slot.gpu.destroy();
     },
@@ -1225,16 +1243,18 @@ export function createGfx(
         boundIndexBuffer = null;
       }
 
-      // Textures + samplers — bind group 1 (cached)
+      // Textures + samplers + storage buffers — bind group 1 (cached)
       const imageHandles = bind.images ?? [];
       const samplerHandles = bind.samplers ?? [];
-      if (imageHandles.length > 0 || samplerHandles.length > 0) {
+      const storageBufferHandles = bind.storageBuffers ?? [];
+      if (imageHandles.length > 0 || samplerHandles.length > 0 || storageBufferHandles.length > 0) {
         if (!currentPipeline) throw new Error("No active pipeline — call applyPipeline before applyBindings");
 
-        // Build cache key from pipeline id + image ids + sampler ids
+        // Build cache key from pipeline id + image ids + sampler ids + storage buffer ids
         const imgIds = imageHandles.map(h => h.id).join(",");
         const smpIds = samplerHandles.map(h => h.id).join(",");
-        const cacheKey = `${currentPipelineId}:${imgIds}:${smpIds}`;
+        const sbufIds = storageBufferHandles.map(h => h.id).join(",");
+        const cacheKey = `${currentPipelineId}:${imgIds}:${smpIds}:${sbufIds}`;
 
         let bg = textureSamplerBindGroupCache.get(cacheKey);
         if (!bg) {
@@ -1249,6 +1269,11 @@ export function createGfx(
             const smp = samplerPool.get(smpHandle.id);
             if (!smp) throw new Error(`Invalid sampler handle at sampler binding ${binding}`);
             entries.push({ binding: binding++, resource: smp.gpu });
+          }
+          for (const sbufHandle of storageBufferHandles) {
+            const sbuf = bufferPool.get(sbufHandle.id);
+            if (!sbuf) throw new Error(`Invalid storage buffer handle at binding ${binding}`);
+            entries.push({ binding: binding++, resource: { buffer: sbuf.gpu } });
           }
           bg = device.createBindGroup({
             layout: currentPipeline.gpu.getBindGroupLayout(1),

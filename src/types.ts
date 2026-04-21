@@ -295,6 +295,8 @@ export enum BufferUsage {
   QUERY_RESOLVE = 4,
   /** Buffer is used as a staging (readback) buffer for CPU access via mapAsync. */
   STAGING = 5,
+  /** Buffer is used as a GPU storage buffer (read or read-write access from shaders). */
+  STORAGE   = 6,
 }
 
 export type TextureDimension = "2d" | "3d" | "cube" | "cube-array";
@@ -315,6 +317,13 @@ export interface QuerySetDesc {
 export interface BufferDesc {
   /** Buffer usage hint. Default: {@link BufferUsage.IMMUTABLE}. */
   usage?: BufferUsage;
+  /**
+   * Storage buffer access mode. Only relevant when `usage` is {@link BufferUsage.STORAGE}.
+   * - `"read"`: shader can only read (maps to `"read-only-storage"` bind group layout type).
+   * - `"readwrite"`: shader can read and write (maps to `"storage"` bind group layout type).
+   * Default: `"readwrite"`.
+   */
+  access?: "read" | "readwrite";
   /** Initial data to upload. If provided, the buffer size is derived from this. */
   data?: ArrayBufferView;
   /** Buffer size in bytes. Used when `data` is not provided. Default: 256. */
@@ -507,6 +516,16 @@ export interface PipelineDesc {
   imageViewDimensions?: GPUTextureViewDimension[];
   /** Number of sampler bindings in bind group 1 (locations images..images+samplerCount-1). Default: 0. */
   samplerCount?: number;
+  /** Number of storage buffer bindings in bind group 1 (after images and samplers). Default: 0. */
+  storageBuffers?: number;
+  /**
+   * Per-binding access mode for storage buffers.
+   * Each entry maps to the corresponding storage buffer binding:
+   * - `"read-only-storage"`: shader can only read the buffer.
+   * - `"storage"`: shader can read and write the buffer.
+   * Default: all bindings use `"storage"` (read-write).
+   */
+  storageBufferAccess?: Array<"read-only-storage" | "storage">;
   /** MSAA multisample configuration. */
   multisample?: MsaaDesc;
   /** Debug label for GPU debugging tools. */
@@ -523,6 +542,8 @@ export interface Bindings {
   images?: SgImage[];
   /** Samplers to bind in bind group 1 (locations N..N+M-1, after images). */
   samplers?: SgSampler[];
+  /** Storage buffers to bind in bind group 1 (after images and samplers). */
+  storageBuffers?: SgBuffer[];
 }
 
 /** Describes a single color attachment for a render pass. */

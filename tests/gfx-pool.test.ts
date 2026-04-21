@@ -240,6 +240,46 @@ describe("Buffer: creation with initial data", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Storage buffer creation and update
+// ---------------------------------------------------------------------------
+
+describe("Buffer: storage buffer creation", () => {
+  it("creates a storage buffer with STORAGE usage", () => {
+    const gfx = makeGfx();
+    const buf = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE });
+    expect(gfx.isValid(buf)).toBe(true);
+    expect(buf._brand).toBe("SgBuffer");
+  });
+
+  it("creates a storage buffer with initial data", () => {
+    const gfx = makeGfx();
+    const data = new Float32Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const buf = gfx.makeBuffer({ data, usage: BufferUsage.STORAGE });
+    expect(gfx.isValid(buf)).toBe(true);
+  });
+
+  it("allows updating a STORAGE buffer", () => {
+    const gfx = makeGfx();
+    const buf = gfx.makeBuffer({ size: 64, usage: BufferUsage.STORAGE });
+    expect(() =>
+      gfx.updateBuffer(buf, new Float32Array([1, 2, 3, 4]))
+    ).not.toThrow();
+  });
+
+  it("creates storage buffer with read access mode", () => {
+    const gfx = makeGfx();
+    const buf = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE, access: "read" });
+    expect(gfx.isValid(buf)).toBe(true);
+  });
+
+  it("creates storage buffer with readwrite access mode", () => {
+    const gfx = makeGfx();
+    const buf = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE, access: "readwrite" });
+    expect(gfx.isValid(buf)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Shutdown leak detection
 // ---------------------------------------------------------------------------
 
