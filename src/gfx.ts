@@ -352,6 +352,7 @@ interface PipelineSlot {
  * @param canvas - The `HTMLCanvasElement` to render into.
  * @param context - The `GPUCanvasContext` obtained from the canvas.
  * @param format - The preferred swapchain texture format (e.g. from `navigator.gpu.getPreferredCanvasFormat()`).
+ * @param options - Optional configuration. `uniformBufferSize` sets the per-frame uniform staging buffer size (default 4 MB).
  * @returns A fully initialised {@link Gfx} instance.
  */
 export function createGfx(
@@ -359,6 +360,7 @@ export function createGfx(
   canvas: HTMLCanvasElement,
   context: GPUCanvasContext,
   format: GPUTextureFormat,
+  options?: { uniformBufferSize?: number },
 ): Gfx {
   const bufferPool   = new Pool<BufferSlot>(128);
   const imagePool    = new Pool<ImageSlot>(128);
@@ -385,10 +387,14 @@ export function createGfx(
   // Texture/sampler bind group cache (group 1): keyed on "pipelineId:img1,img2,...:smp1,smp2,..."
   const textureSamplerBindGroupCache = new Map<string, GPUBindGroup>();
 
-  const UNIFORM_BUFFER_SIZE = 65536; // 64KB uniform staging per ring slot
-  if (UNIFORM_BUFFER_SIZE > device.limits.maxUniformBufferBindingSize) {
+  const DEFAULT_UNIFORM_BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB, matching upstream sokol-C
+  const UNIFORM_BUFFER_SIZE = options?.uniformBufferSize ?? DEFAULT_UNIFORM_BUFFER_SIZE;
+  // The per-slot binding size (256 bytes) is the window exposed to the shader
+  // via dynamic offsets. Validate that this fits within the device limit.
+  const UNIFORM_SLOT_SIZE = 256;
+  if (UNIFORM_SLOT_SIZE > device.limits.maxUniformBufferBindingSize) {
     throw new Error(
-      `UNIFORM_BUFFER_SIZE (${UNIFORM_BUFFER_SIZE}) exceeds device limit maxUniformBufferBindingSize (${device.limits.maxUniformBufferBindingSize})`
+      `Uniform slot size (${UNIFORM_SLOT_SIZE}) exceeds device limit maxUniformBufferBindingSize (${device.limits.maxUniformBufferBindingSize})`
     );
   }
   let uniformFrameIndex = 0;
@@ -414,7 +420,7 @@ export function createGfx(
     uniformBuffers.push(buf);
     uniformBindGroups.push(device.createBindGroup({
       layout: uniformBindGroupLayout,
-      entries: [{ binding: 0, resource: { buffer: buf, size: UNIFORM_BUFFER_SIZE } }],
+      entries: [{ binding: 0, resource: { buffer: buf, size: UNIFORM_SLOT_SIZE } }],
       label: `uniform_bind_group_${i}`,
     }));
   }
@@ -1094,7 +1100,6 @@ export function createGfx(
       };
 
       passEncoder = encoder.beginRenderPass(passDescGpu);
-      uniformOffset = 0;
       boundVertexBuffers = [];
       boundIndexBuffer = null;
       _frameStats = { drawCalls: 0, totalElements: 0, indirectDrawCalls: 0 };
@@ -1177,7 +1182,7 @@ export function createGfx(
       if (alignedOffset + slotSize > UNIFORM_BUFFER_SIZE) {
         throw new Error(
           `Uniform buffer overflow: offset ${alignedOffset} + ${slotSize} exceeds UNIFORM_BUFFER_SIZE (${UNIFORM_BUFFER_SIZE}). ` +
-          `Too many applyUniforms calls in a single pass.`
+          `Too many applyUniforms calls in a single frame.`
         );
       }
 
