@@ -257,7 +257,7 @@ export enum BufferUsage {
   INDIRECT  = 3,
 }
 
-export type TextureDimension = "2d" | "3d" | "cube";
+export type TextureDimension = "2d" | "3d" | "cube" | "cube-array";
 
 // ---------------------------------------------------------------------------
 // Desc structs -- all fields optional, defaults applied at creation
@@ -295,7 +295,12 @@ export interface ImageDesc {
   dimension?: TextureDimension;
   /** Number of mipmaps. 0 = auto-generate full chain, 1 = no mipmaps (default). */
   numMipmaps?: number;
-  /** Number of array layers for 2D array textures (default 1). Ignored for "cube" (always 6). */
+  /**
+   * Number of array layers for 2D array textures (default 1).
+   * Ignored for "cube" (always 6 layers).
+   * For "cube-array", this is the number of cubes; the actual layer count
+   * will be `numSlices * 6`.
+   */
   numSlices?: number;
   /** Debug label for GPU debugging tools. */
   label?: string;
@@ -442,6 +447,16 @@ export interface PipelineDesc {
   depth?: DepthStencilDesc;
   /** Number of texture bindings in bind group 1 (locations 0..images-1). Default: 0. */
   images?: number;
+  /**
+   * View dimension for each texture binding in bind group 1.
+   * When provided, `imageViewDimensions[i]` sets the `viewDimension` on the
+   * bind group layout entry for image slot `i`. Slots beyond the array length
+   * (or when omitted entirely) default to `"2d"`.
+   *
+   * Must be set for cube / cube-array textures; otherwise the layout defaults
+   * to `"2d"` and `createBindGroup` will fail at runtime.
+   */
+  imageViewDimensions?: GPUTextureViewDimension[];
   /** Number of sampler bindings in bind group 1 (locations images..images+samplerCount-1). Default: 0. */
   samplerCount?: number;
   /** MSAA multisample configuration. */

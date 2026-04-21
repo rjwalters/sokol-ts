@@ -437,6 +437,7 @@ export function createGfx(
       colors: desc.colors,
       depth: desc.depth,
       images: desc.images,
+      imageViewDimensions: desc.imageViewDimensions,
       samplerCount: desc.samplerCount,
       multisample: desc.multisample,
     });
@@ -564,6 +565,7 @@ export function createGfx(
       const dim: TextureDimension = desc.dimension ?? "2d";
       const is3D = dim === "3d";
       const isCube = dim === "cube";
+      const isCubeArray = dim === "cube-array";
 
       // Validate compressed format feature support
       const requiredFeature = requiredFeatureForFormat(desc.format ?? PixelFormat.RGBA8);
@@ -576,7 +578,9 @@ export function createGfx(
 
       // Resolve depth/array layers
       let depthOrArrayLayers: number;
-      if (isCube) {
+      if (isCubeArray) {
+        depthOrArrayLayers = (desc.numSlices ?? 1) * 6;
+      } else if (isCube) {
         depthOrArrayLayers = 6;
       } else if (is3D) {
         depthOrArrayLayers = desc.depth ?? 1;
@@ -603,6 +607,7 @@ export function createGfx(
         usage |= GPUTextureUsage.RENDER_ATTACHMENT;
       }
 
+      // Both cube and cube-array use "2d" as the underlying GPU texture dimension
       const gpuDimension: GPUTextureDimension = is3D ? "3d" : "2d";
 
       const texture = device.createTexture({
@@ -627,7 +632,9 @@ export function createGfx(
 
       // Create the appropriate texture view
       let viewDimension: GPUTextureViewDimension;
-      if (isCube) {
+      if (isCubeArray) {
+        viewDimension = "cube-array";
+      } else if (isCube) {
         viewDimension = "cube";
       } else if (is3D) {
         viewDimension = "3d";
@@ -758,10 +765,11 @@ export function createGfx(
       if (imageCount > 0 || samplerCount > 0) {
         const group1Entries: GPUBindGroupLayoutEntry[] = [];
         for (let i = 0; i < imageCount; i++) {
+          const viewDim = desc.imageViewDimensions?.[i];
           group1Entries.push({
             binding: i,
             visibility: GPUShaderStage.FRAGMENT,
-            texture: {},
+            texture: viewDim ? { viewDimension: viewDim } : {},
           });
         }
         for (let i = 0; i < samplerCount; i++) {
