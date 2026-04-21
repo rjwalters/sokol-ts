@@ -3,7 +3,7 @@
  * Tests exercise the public createGfx() API using mock GPU objects.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { createGfx } from "../src/gfx.js";
 import { BufferUsage } from "../src/types.js";
 import { createMockGfxDeps } from "./gpu-mock.js";
@@ -309,5 +309,136 @@ describe("Compute: DrawStats.dispatchCalls", () => {
     gfx.beginPass();
     gfx.endPass();
     expect(gfx.frameStats.dispatchCalls).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Compute bind group caching
+// ---------------------------------------------------------------------------
+
+describe("Compute: bind group caching", () => {
+  function makeGfxWithSpy() {
+    const deps = createMockGfxDeps();
+    const spy = vi.spyOn(deps.device, "createBindGroup");
+    const gfx = createGfx(deps.device, deps.canvas, deps.context, deps.format);
+    return { gfx, createBindGroupSpy: spy };
+  }
+
+  it("caches bind group on repeated identical bindings", async () => {
+    const { gfx, createBindGroupSpy } = makeGfxWithSpy();
+    const shd = await gfx.makeComputeShader({
+      source: "@compute @workgroup_size(64) fn cs_main() {}",
+    });
+    const pip = gfx.makeComputePipeline({ shader: shd, storageBuffers: 1 });
+    const buf = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE });
+
+    // First call -- cache miss, creates bind group
+    gfx.beginComputePass();
+    gfx.applyComputePipeline(pip);
+    gfx.applyComputeBindings({ storageBuffers: [buf] });
+    gfx.endPass();
+
+    const callsAfterFirst = createBindGroupSpy.mock.calls.length;
+
+    // Second call -- cache hit, should NOT create another bind group
+    gfx.beginComputePass();
+    gfx.applyComputePipeline(pip);
+    gfx.applyComputeBindings({ storageBuffers: [buf] });
+    gfx.endPass();
+    gfx.commit();
+
+    expect(createBindGroupSpy.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it("creates a new bind group when bindings change", async () => {
+    const { gfx, createBindGroupSpy } = makeGfxWithSpy();
+    const shd = await gfx.makeComputeShader({
+      source: "@compute @workgroup_size(64) fn cs_main() {}",
+    });
+    const pip = gfx.makeComputePipeline({ shader: shd, storageBuffers: 1 });
+    const buf1 = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE });
+    const buf2 = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE });
+
+    gfx.beginComputePass();
+    gfx.applyComputePipeline(pip);
+    gfx.applyComputeBindings({ storageBuffers: [buf1] });
+    gfx.endPass();
+
+    const callsAfterFirst = createBindGroupSpy.mock.calls.length;
+
+    // Different buffer -- should create a new bind group
+    gfx.beginComputePass();
+    gfx.applyComputePipeline(pip);
+    gfx.applyComputeBindings({ storageBuffers: [buf2] });
+    gfx.endPass();
+    gfx.commit();
+
+    expect(createBindGroupSpy.mock.calls.length).toBe(callsAfterFirst + 1);
+  });
+
+  it("invalidates cache when storage buffer is destroyed", async () => {
+    const { gfx, createBindGroupSpy } = makeGfxWithSpy();
+    const shd = await gfx.makeComputeShader({
+      source: "@compute @workgroup_size(64) fn cs_main() {}",
+    });
+    const pip = gfx.makeComputePipeline({ shader: shd, storageBuffers: 1 });
+    const buf = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE });
+
+    // Populate cache
+    gfx.beginComputePass();
+    gfx.applyComputePipeline(pip);
+    gfx.applyComputeBindings({ storageBuffers: [buf] });
+    gfx.endPass();
+    gfx.commit();
+
+    const callsAfterFirst = createBindGroupSpy.mock.calls.length;
+
+    // Destroy buffer -- invalidates cache
+    gfx.destroyBuffer(buf);
+
+    // Create a new buffer (will get same or different slot id)
+    const buf2 = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE });
+
+    gfx.beginComputePass();
+    gfx.applyComputePipeline(pip);
+    gfx.applyComputeBindings({ storageBuffers: [buf2] });
+    gfx.endPass();
+    gfx.commit();
+
+    // Should have created a new bind group since the old one was invalidated
+    expect(createBindGroupSpy.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+  });
+
+  it("invalidates cache when compute pipeline is destroyed", async () => {
+    const { gfx, createBindGroupSpy } = makeGfxWithSpy();
+    const shd = await gfx.makeComputeShader({
+      source: "@compute @workgroup_size(64) fn cs_main() {}",
+    });
+    const pip = gfx.makeComputePipeline({ shader: shd, storageBuffers: 1 });
+    const buf = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE });
+
+    // Populate cache
+    gfx.beginComputePass();
+    gfx.applyComputePipeline(pip);
+    gfx.applyComputeBindings({ storageBuffers: [buf] });
+    gfx.endPass();
+    gfx.commit();
+
+    const callsAfterFirst = createBindGroupSpy.mock.calls.length;
+
+    // Destroy pipeline -- invalidates cache
+    gfx.destroyComputePipeline(pip);
+
+    // Recreate pipeline and rebind
+    const pip2 = gfx.makeComputePipeline({ shader: shd, storageBuffers: 1 });
+
+    gfx.beginComputePass();
+    gfx.applyComputePipeline(pip2);
+    gfx.applyComputeBindings({ storageBuffers: [buf] });
+    gfx.endPass();
+    gfx.commit();
+
+    // Should have created a new bind group since old pipeline was destroyed
+    expect(createBindGroupSpy.mock.calls.length).toBeGreaterThan(callsAfterFirst);
   });
 });
