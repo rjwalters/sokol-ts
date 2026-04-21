@@ -1236,6 +1236,12 @@ export function createGfx(
     },
 
     beginPass(desc?: PassDesc) {
+      if (passEncoder) {
+        throw new Error("beginPass() called while a render pass is already active -- call endPass() first");
+      }
+      if (computePassEncoder) {
+        throw new Error("beginPass() called while a compute pass is active -- call endPass() first");
+      }
       // Create the encoder once per frame; reuse across multiple passes.
       if (!encoder) {
         encoder = device.createCommandEncoder();
@@ -1504,6 +1510,12 @@ export function createGfx(
     },
 
     beginComputePass(opts?: { label?: string }) {
+      if (passEncoder) {
+        throw new Error("beginComputePass() called while a render pass is active -- call endPass() first");
+      }
+      if (computePassEncoder) {
+        throw new Error("beginComputePass() called while a compute pass is already active -- call endPass() first");
+      }
       if (!encoder) {
         encoder = device.createCommandEncoder();
       }

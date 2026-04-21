@@ -250,6 +250,62 @@ describe("Compute: pass lifecycle", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Overlapping pass guards
+// ---------------------------------------------------------------------------
+
+describe("Compute: overlapping pass guards", () => {
+  it("throws on beginPass while a compute pass is active", () => {
+    const gfx = makeGfx();
+    gfx.beginComputePass();
+    expect(() => gfx.beginPass()).toThrow(
+      "beginPass() called while a compute pass is active -- call endPass() first"
+    );
+  });
+
+  it("throws on beginComputePass while a render pass is active", () => {
+    const gfx = makeGfx();
+    gfx.beginPass();
+    expect(() => gfx.beginComputePass()).toThrow(
+      "beginComputePass() called while a render pass is active -- call endPass() first"
+    );
+  });
+
+  it("throws on beginPass while a render pass is already active", () => {
+    const gfx = makeGfx();
+    gfx.beginPass();
+    expect(() => gfx.beginPass()).toThrow(
+      "beginPass() called while a render pass is already active -- call endPass() first"
+    );
+  });
+
+  it("throws on beginComputePass while a compute pass is already active", () => {
+    const gfx = makeGfx();
+    gfx.beginComputePass();
+    expect(() => gfx.beginComputePass()).toThrow(
+      "beginComputePass() called while a compute pass is already active -- call endPass() first"
+    );
+  });
+
+  it("allows beginPass after endPass closes a compute pass", () => {
+    const gfx = makeGfx();
+    gfx.beginComputePass();
+    gfx.endPass();
+    expect(() => gfx.beginPass()).not.toThrow();
+    gfx.endPass();
+    gfx.commit();
+  });
+
+  it("allows beginComputePass after endPass closes a render pass", () => {
+    const gfx = makeGfx();
+    gfx.beginPass();
+    gfx.endPass();
+    expect(() => gfx.beginComputePass()).not.toThrow();
+    gfx.endPass();
+    gfx.commit();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Compute and render pass coexistence
 // ---------------------------------------------------------------------------
 
