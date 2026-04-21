@@ -745,10 +745,10 @@ export interface Gfx {
    * alignment (WebGPU requirement for dynamic offsets).
    *
    * @param data - Uniform data to upload.
-   * @remarks Each call reserves `Math.max(data.byteLength, 256)` bytes,
-   * rounded up to the next 256-byte boundary. The 64 KB per-frame budget
-   * therefore allows at most 256 uniform calls per frame at minimum size.
-   * Exceeding this budget throws at runtime.
+   * @remarks Each call aligns the write offset to a 256-byte boundary,
+   * then reserves `Math.max(data.byteLength, 256)` bytes. The 64 KB
+   * per-frame budget therefore allows at most 256 uniform calls per frame
+   * at minimum size. Exceeding this budget throws at runtime.
    */
   applyUniforms(data: ArrayBufferView): void;
 

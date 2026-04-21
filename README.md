@@ -91,7 +91,7 @@ npx vite examples/instancing      # 64 instanced triangles
 
 ### Handle lifetime is manual
 
-`makeBuffer()`, `makeImage()`, `makeSampler()`, `makeShader()`, and `makePipeline()` each allocate a slot in a fixed-size pool (4 096 entries by default). These slots are **not** garbage-collected -- you must call the matching `destroy*()` method when a resource is no longer needed. Leaking handles eventually exhausts the pool, which throws at runtime. `shutdown()` destroys all live resources and logs warnings for any that were not explicitly released, but relying on shutdown for cleanup is not a substitute for proper lifetime management.
+`makeBuffer()`, `makeImage()`, `makeSampler()`, `makeShader()`, and `makePipeline()` each allocate a slot in a fixed-size pool (64 to 128 entries depending on resource type). These slots are **not** garbage-collected -- you must call the matching `destroy*()` method when a resource is no longer needed. Leaking handles eventually exhausts the pool, which throws at runtime. `shutdown()` destroys all live resources and logs warnings for any that were not explicitly released, but relying on shutdown for cleanup is not a substitute for proper lifetime management.
 
 ```typescript
 const buf = gfx.makeBuffer({ data: vertices });
