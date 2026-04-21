@@ -87,6 +87,22 @@ npx vite examples/instancing      # 64 instanced triangles
 - **Debug text overlay** with printf-style formatting
 - **Vite HMR** -- live reload with serializable state
 
+## Gotchas
+
+### Handle lifetime is manual
+
+`makeBuffer()`, `makeImage()`, `makeSampler()`, `makeShader()`, and `makePipeline()` each allocate a slot in a fixed-size pool (64 to 128 entries depending on resource type). These slots are **not** garbage-collected -- you must call the matching `destroy*()` method when a resource is no longer needed. Leaking handles eventually exhausts the pool, which throws at runtime. `shutdown()` destroys all live resources and logs warnings for any that were not explicitly released, but relying on shutdown for cleanup is not a substitute for proper lifetime management.
+
+```typescript
+const buf = gfx.makeBuffer({ data: vertices });
+// ... use buf ...
+gfx.destroyBuffer(buf); // free the pool slot and GPU memory
+```
+
+### Uniform buffer 256-byte alignment
+
+Each `applyUniforms(data)` call writes into a shared 64 KB ring buffer that is reset every frame. Writes are aligned to 256-byte boundaries (the WebGPU `minUniformBufferOffsetAlignment` requirement), so every call reserves at least 256 bytes regardless of the actual data size. This means at most 256 uniform calls can fit in a single frame (`65 536 / 256 = 256`). If you exceed this budget the library will throw. Keep uniform data small and batch where possible.
+
 ## Development
 
 ```bash
