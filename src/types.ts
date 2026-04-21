@@ -238,6 +238,14 @@ export enum PixelFormat {
   ETC2_RGBA8 = "etc2-rgba8unorm",
   ASTC_4X4 = "astc-4x4-unorm",
   ASTC_8X8 = "astc-8x8-unorm",
+  // Block-compressed formats (sRGB variants)
+  BC1_RGBA_SRGB = "bc1-rgba-unorm-srgb",
+  BC3_RGBA_SRGB = "bc3-rgba-unorm-srgb",
+  BC7_RGBA_SRGB = "bc7-rgba-unorm-srgb",
+  ETC2_RGB8_SRGB = "etc2-rgb8unorm-srgb",
+  ETC2_RGBA8_SRGB = "etc2-rgba8unorm-srgb",
+  ASTC_4X4_SRGB = "astc-4x4-unorm-srgb",
+  ASTC_8X8_SRGB = "astc-8x8-unorm-srgb",
 }
 
 /**
