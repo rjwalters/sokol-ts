@@ -45,18 +45,25 @@ export function getFormatInfo(fmt: PixelFormat): FormatInfo {
     case PixelFormat.DEPTH24_STENCIL8:  return { bytesPerBlock: 4,  blockWidth: 1, blockHeight: 1, isCompressed: false, isDepth: true  };
     case PixelFormat.DEPTH32F:          return { bytesPerBlock: 4,  blockWidth: 1, blockHeight: 1, isCompressed: false, isDepth: true  };
     // BC formats (4x4 blocks)
-    case PixelFormat.BC1_RGBA:          return { bytesPerBlock: 8,  blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
-    case PixelFormat.BC3_RGBA:          return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.BC1_RGBA:
+    case PixelFormat.BC1_RGBA_SRGB:     return { bytesPerBlock: 8,  blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.BC3_RGBA:
+    case PixelFormat.BC3_RGBA_SRGB:     return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
     case PixelFormat.BC4_R:             return { bytesPerBlock: 8,  blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
     case PixelFormat.BC5_RG:            return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
     case PixelFormat.BC6H_RGB:          return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
-    case PixelFormat.BC7_RGBA:          return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.BC7_RGBA:
+    case PixelFormat.BC7_RGBA_SRGB:     return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
     // ETC2 (4x4 blocks)
-    case PixelFormat.ETC2_RGB8:         return { bytesPerBlock: 8,  blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
-    case PixelFormat.ETC2_RGBA8:        return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.ETC2_RGB8:
+    case PixelFormat.ETC2_RGB8_SRGB:    return { bytesPerBlock: 8,  blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.ETC2_RGBA8:
+    case PixelFormat.ETC2_RGBA8_SRGB:   return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
     // ASTC
-    case PixelFormat.ASTC_4X4:          return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
-    case PixelFormat.ASTC_8X8:          return { bytesPerBlock: 16, blockWidth: 8, blockHeight: 8, isCompressed: true,  isDepth: false };
+    case PixelFormat.ASTC_4X4:
+    case PixelFormat.ASTC_4X4_SRGB:     return { bytesPerBlock: 16, blockWidth: 4, blockHeight: 4, isCompressed: true,  isDepth: false };
+    case PixelFormat.ASTC_8X8:
+    case PixelFormat.ASTC_8X8_SRGB:     return { bytesPerBlock: 16, blockWidth: 8, blockHeight: 8, isCompressed: true,  isDepth: false };
     default:                            return { bytesPerBlock: 4,  blockWidth: 1, blockHeight: 1, isCompressed: false, isDepth: false };
   }
 }
@@ -80,17 +87,24 @@ function maxMipLevels(width: number, height: number, depth = 1): number {
 export function requiredFeatureForFormat(fmt: PixelFormat): GPUFeatureName | null {
   switch (fmt) {
     case PixelFormat.BC1_RGBA:
+    case PixelFormat.BC1_RGBA_SRGB:
     case PixelFormat.BC3_RGBA:
+    case PixelFormat.BC3_RGBA_SRGB:
     case PixelFormat.BC4_R:
     case PixelFormat.BC5_RG:
     case PixelFormat.BC6H_RGB:
     case PixelFormat.BC7_RGBA:
+    case PixelFormat.BC7_RGBA_SRGB:
       return "texture-compression-bc";
     case PixelFormat.ETC2_RGB8:
+    case PixelFormat.ETC2_RGB8_SRGB:
     case PixelFormat.ETC2_RGBA8:
+    case PixelFormat.ETC2_RGBA8_SRGB:
       return "texture-compression-etc2";
     case PixelFormat.ASTC_4X4:
+    case PixelFormat.ASTC_4X4_SRGB:
     case PixelFormat.ASTC_8X8:
+    case PixelFormat.ASTC_8X8_SRGB:
       return "texture-compression-astc";
     default:
       return null;

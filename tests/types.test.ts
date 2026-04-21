@@ -117,9 +117,9 @@ describe("PixelFormat", () => {
     expect(PixelFormat.ASTC_8X8).toBe("astc-8x8-unorm");
   });
 
-  it("has exactly 18 members", () => {
+  it("has exactly 25 members", () => {
     const values = Object.values(PixelFormat);
-    expect(values).toHaveLength(18);
+    expect(values).toHaveLength(25);
   });
 });
 

@@ -97,6 +97,48 @@ describe("getFormatInfo", () => {
     expect(astc8.blockHeight).toBe(8);
   });
 
+  it("returns correct info for sRGB BC compressed variants (matches linear counterpart)", () => {
+    const bc1 = getFormatInfo(PixelFormat.BC1_RGBA_SRGB);
+    expect(bc1.bytesPerBlock).toBe(8);
+    expect(bc1.blockWidth).toBe(4);
+    expect(bc1.blockHeight).toBe(4);
+    expect(bc1.isCompressed).toBe(true);
+    expect(bc1.isDepth).toBe(false);
+
+    const bc3 = getFormatInfo(PixelFormat.BC3_RGBA_SRGB);
+    expect(bc3.bytesPerBlock).toBe(16);
+    expect(bc3.blockWidth).toBe(4);
+
+    const bc7 = getFormatInfo(PixelFormat.BC7_RGBA_SRGB);
+    expect(bc7.bytesPerBlock).toBe(16);
+    expect(bc7.blockWidth).toBe(4);
+  });
+
+  it("returns correct info for sRGB ETC2 compressed variants", () => {
+    const etc2rgb = getFormatInfo(PixelFormat.ETC2_RGB8_SRGB);
+    expect(etc2rgb.bytesPerBlock).toBe(8);
+    expect(etc2rgb.blockWidth).toBe(4);
+    expect(etc2rgb.blockHeight).toBe(4);
+    expect(etc2rgb.isCompressed).toBe(true);
+
+    const etc2rgba = getFormatInfo(PixelFormat.ETC2_RGBA8_SRGB);
+    expect(etc2rgba.bytesPerBlock).toBe(16);
+    expect(etc2rgba.blockWidth).toBe(4);
+  });
+
+  it("returns correct info for sRGB ASTC compressed variants", () => {
+    const astc4 = getFormatInfo(PixelFormat.ASTC_4X4_SRGB);
+    expect(astc4.bytesPerBlock).toBe(16);
+    expect(astc4.blockWidth).toBe(4);
+    expect(astc4.blockHeight).toBe(4);
+    expect(astc4.isCompressed).toBe(true);
+
+    const astc8 = getFormatInfo(PixelFormat.ASTC_8X8_SRGB);
+    expect(astc8.bytesPerBlock).toBe(16);
+    expect(astc8.blockWidth).toBe(8);
+    expect(astc8.blockHeight).toBe(8);
+  });
+
   it("returns default info for unknown/invalid format", () => {
     const unknown = getFormatInfo("nonexistent-format" as PixelFormat);
     expect(unknown.bytesPerBlock).toBe(4);
@@ -149,6 +191,17 @@ describe("bytesPerRowForFormat", () => {
     expect(bytesPerRowForFormat(PixelFormat.ETC2_RGB8, 1)).toBe(8);
     expect(bytesPerRowForFormat(PixelFormat.ASTC_4X4, 1)).toBe(16);
   });
+
+  it("computes correct bytes per row for sRGB compressed variants", () => {
+    // sRGB variants must produce the same results as their linear counterparts
+    expect(bytesPerRowForFormat(PixelFormat.BC1_RGBA_SRGB, 256)).toBe(512);
+    expect(bytesPerRowForFormat(PixelFormat.BC3_RGBA_SRGB, 256)).toBe(1024);
+    expect(bytesPerRowForFormat(PixelFormat.BC7_RGBA_SRGB, 256)).toBe(1024);
+    expect(bytesPerRowForFormat(PixelFormat.ETC2_RGB8_SRGB, 256)).toBe(512);
+    expect(bytesPerRowForFormat(PixelFormat.ETC2_RGBA8_SRGB, 256)).toBe(1024);
+    expect(bytesPerRowForFormat(PixelFormat.ASTC_4X4_SRGB, 256)).toBe(1024);
+    expect(bytesPerRowForFormat(PixelFormat.ASTC_8X8_SRGB, 256)).toBe(512);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -192,5 +245,21 @@ describe("requiredFeatureForFormat", () => {
   it("returns texture-compression-astc for ASTC formats", () => {
     expect(requiredFeatureForFormat(PixelFormat.ASTC_4X4)).toBe("texture-compression-astc");
     expect(requiredFeatureForFormat(PixelFormat.ASTC_8X8)).toBe("texture-compression-astc");
+  });
+
+  it("returns texture-compression-bc for sRGB BC variants", () => {
+    expect(requiredFeatureForFormat(PixelFormat.BC1_RGBA_SRGB)).toBe("texture-compression-bc");
+    expect(requiredFeatureForFormat(PixelFormat.BC3_RGBA_SRGB)).toBe("texture-compression-bc");
+    expect(requiredFeatureForFormat(PixelFormat.BC7_RGBA_SRGB)).toBe("texture-compression-bc");
+  });
+
+  it("returns texture-compression-etc2 for sRGB ETC2 variants", () => {
+    expect(requiredFeatureForFormat(PixelFormat.ETC2_RGB8_SRGB)).toBe("texture-compression-etc2");
+    expect(requiredFeatureForFormat(PixelFormat.ETC2_RGBA8_SRGB)).toBe("texture-compression-etc2");
+  });
+
+  it("returns texture-compression-astc for sRGB ASTC variants", () => {
+    expect(requiredFeatureForFormat(PixelFormat.ASTC_4X4_SRGB)).toBe("texture-compression-astc");
+    expect(requiredFeatureForFormat(PixelFormat.ASTC_8X8_SRGB)).toBe("texture-compression-astc");
   });
 });
