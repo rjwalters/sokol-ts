@@ -51,8 +51,11 @@ export interface SgShader { readonly _brand: "SgShader"; readonly id: number }
  */
 export interface SgPipeline { readonly _brand: "SgPipeline"; readonly id: number }
 
+/** Opaque handle to a GPU query set resource (used for timestamp queries). */
+export interface SgQuerySet { readonly _brand: "SgQuerySet"; readonly id: number }
+
 /** Union of all GPU resource handle types. */
-export type Handle = SgBuffer | SgImage | SgSampler | SgShader | SgPipeline;
+export type Handle = SgBuffer | SgImage | SgSampler | SgShader | SgPipeline | SgQuerySet;
 
 // ---------------------------------------------------------------------------
 // Enums matching Sokol conventions
@@ -288,9 +291,21 @@ export enum BufferUsage {
   STREAM    = 2,
   /** Buffer is used as an indirect draw argument source. */
   INDIRECT  = 3,
+  /** Buffer is used as a destination for resolved query results (e.g. timestamp queries). */
+  QUERY_RESOLVE = 4,
+  /** Buffer is used as a staging (readback) buffer for CPU access via mapAsync. */
+  STAGING = 5,
 }
 
 export type TextureDimension = "2d" | "3d" | "cube" | "cube-array";
+
+/** Descriptor for creating a GPU query set via {@link Gfx.makeQuerySet}. */
+export interface QuerySetDesc {
+  /** Number of timestamp slots in the query set. */
+  count: number;
+  /** Debug label for GPU debugging tools. */
+  label?: string;
+}
 
 // ---------------------------------------------------------------------------
 // Desc structs -- all fields optional, defaults applied at creation
@@ -546,6 +561,18 @@ export interface PassDesc {
     /** Resolve targets for MSAA color images (one per colorImage). */
     resolveImages?: SgImage[];
   };
+  /**
+   * Optional timestamp writes for GPU profiling.
+   * Requires the `"timestamp-query"` feature to be enabled on the device.
+   */
+  timestampWrites?: {
+    /** Query set to write timestamps into. */
+    querySet: SgQuerySet;
+    /** Index into the query set for the beginning-of-pass timestamp. */
+    beginningOfPassWriteIndex?: number;
+    /** Index into the query set for the end-of-pass timestamp. */
+    endOfPassWriteIndex?: number;
+  };
 }
 
 /**
@@ -721,6 +748,43 @@ export interface Gfx {
    * @param pip - Pipeline handle to destroy.
    */
   destroyPipeline(pip: SgPipeline): void;
+
+  /**
+   * Create a GPU query set for timestamp queries.
+   *
+   * Requires the `"timestamp-query"` feature to be enabled on the device
+   * (via `AppDesc.requiredFeatures`). Throws if the feature is not available.
+   *
+   * @param desc - Query set descriptor.
+   * @returns An opaque query set handle.
+   */
+  makeQuerySet(desc: QuerySetDesc): SgQuerySet;
+
+  /**
+   * Destroy a query set and release its GPU memory.
+   * @param qs - Query set handle to destroy.
+   */
+  destroyQuerySet(qs: SgQuerySet): void;
+
+  /**
+   * Resolve query results into a destination buffer.
+   *
+   * Must be called after `endPass()` but before `commit()`. The destination
+   * buffer must have been created with `BufferUsage.QUERY_RESOLVE`.
+   *
+   * @param querySet - Query set containing the results to resolve.
+   * @param firstQuery - Index of the first query to resolve.
+   * @param queryCount - Number of queries to resolve.
+   * @param destination - Buffer to write resolved results into.
+   * @param destinationOffset - Byte offset into the destination buffer. Default: 0.
+   */
+  resolveQuerySet(
+    querySet: SgQuerySet,
+    firstQuery: number,
+    queryCount: number,
+    destination: SgBuffer,
+    destinationOffset?: number,
+  ): void;
 
   /**
    * Check whether a resource handle is still valid (not destroyed).

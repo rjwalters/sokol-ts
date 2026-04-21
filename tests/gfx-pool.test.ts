@@ -6,12 +6,23 @@
 
 import { describe, it, expect } from "vitest";
 import { createGfx } from "../src/gfx.js";
-import { BufferUsage, type SgBuffer } from "../src/types.js";
-import { createMockGfxDeps } from "./gpu-mock.js";
+import { BufferUsage, type SgBuffer, type SgQuerySet } from "../src/types.js";
+import { createMockGfxDeps, createMockDevice, createMockCanvas, createMockContext } from "./gpu-mock.js";
 
 function makeGfx() {
   const deps = createMockGfxDeps();
   return createGfx(deps.device, deps.canvas, deps.context, deps.format);
+}
+
+/** Creates a Gfx instance with the "timestamp-query" feature enabled + returns the mock device. */
+function makeGfxWithTimestampQuery() {
+  const device = createMockDevice();
+  (device.features as Set<string>).add("timestamp-query");
+  const canvas = createMockCanvas();
+  const context = createMockContext();
+  const format = "bgra8unorm" as GPUTextureFormat;
+  const gfx = createGfx(device, canvas, context, format);
+  return { gfx, device };
 }
 
 // ---------------------------------------------------------------------------
@@ -260,5 +271,184 @@ describe("gfx.shutdown: leak detection", () => {
 
     console.warn = origWarn;
     expect(warnings.length).toBe(0);
+  });
+
+  it("warns about leaked query sets on shutdown", () => {
+    const { gfx } = makeGfxWithTimestampQuery();
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(String(args[0]));
+
+    gfx.makeQuerySet({ count: 2, label: "leaked-qs" });
+    gfx.shutdown();
+
+    console.warn = origWarn;
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain("not explicitly destroyed");
+    expect(warnings[0]).toContain("leaked-qs");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QuerySet: handle lifecycle
+// ---------------------------------------------------------------------------
+
+describe("QuerySet: handle allocation and validity", () => {
+  it("returns a valid handle from makeQuerySet", () => {
+    const { gfx } = makeGfxWithTimestampQuery();
+    const qs = gfx.makeQuerySet({ count: 2 });
+    expect(qs.id).toBeGreaterThan(0);
+    expect(qs._brand).toBe("SgQuerySet");
+    expect(gfx.isValid(qs)).toBe(true);
+  });
+
+  it("marks handle as invalid after destroyQuerySet", () => {
+    const { gfx } = makeGfxWithTimestampQuery();
+    const qs = gfx.makeQuerySet({ count: 2 });
+    expect(gfx.isValid(qs)).toBe(true);
+    gfx.destroyQuerySet(qs);
+    expect(gfx.isValid(qs)).toBe(false);
+  });
+
+  it("double-destroy is a no-op (no throw)", () => {
+    const { gfx } = makeGfxWithTimestampQuery();
+    const qs = gfx.makeQuerySet({ count: 2 });
+    gfx.destroyQuerySet(qs);
+    expect(() => gfx.destroyQuerySet(qs)).not.toThrow();
+  });
+
+  it("rejects a stale handle after slot is reused", () => {
+    const { gfx } = makeGfxWithTimestampQuery();
+    const first = gfx.makeQuerySet({ count: 2 });
+    gfx.destroyQuerySet(first);
+
+    const second = gfx.makeQuerySet({ count: 4 });
+    expect(gfx.isValid(first)).toBe(false);
+    expect(gfx.isValid(second)).toBe(true);
+    // Same slot index (lower 16 bits) but different generation
+    expect(first.id & 0xFFFF).toBe(second.id & 0xFFFF);
+    expect(first.id >>> 16).not.toBe(second.id >>> 16);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QuerySet: feature gate
+// ---------------------------------------------------------------------------
+
+describe("QuerySet: feature gate", () => {
+  it("throws when timestamp-query feature is not enabled", () => {
+    const gfx = makeGfx(); // no timestamp-query feature
+    expect(() => gfx.makeQuerySet({ count: 2 })).toThrow("timestamp-query");
+  });
+
+  it("succeeds when timestamp-query feature is enabled", () => {
+    const { gfx } = makeGfxWithTimestampQuery();
+    expect(() => gfx.makeQuerySet({ count: 2 })).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveQuerySet
+// ---------------------------------------------------------------------------
+
+describe("resolveQuerySet", () => {
+  it("calls encoder.resolveQuerySet with correct arguments", () => {
+    const { gfx, device } = makeGfxWithTimestampQuery();
+    const qs = gfx.makeQuerySet({ count: 2 });
+    const buf = gfx.makeBuffer({ size: 16, usage: BufferUsage.QUERY_RESOLVE });
+
+    // Begin and end a pass to create the encoder
+    gfx.beginPass();
+    gfx.endPass();
+
+    // Now resolveQuerySet should work (encoder exists, no active pass)
+    gfx.resolveQuerySet(qs, 0, 2, buf, 0);
+
+    // Verify the mock encoder recorded the call
+    expect(device._lastEncoder).not.toBeNull();
+    expect(device._lastEncoder!.resolveQuerySetCalls.length).toBe(1);
+    const call = device._lastEncoder!.resolveQuerySetCalls[0];
+    expect(call.firstQuery).toBe(0);
+    expect(call.queryCount).toBe(2);
+    expect(call.destinationOffset).toBe(0);
+  });
+
+  it("throws when no command encoder is active", () => {
+    const { gfx } = makeGfxWithTimestampQuery();
+    const qs = gfx.makeQuerySet({ count: 2 });
+    const buf = gfx.makeBuffer({ size: 16, usage: BufferUsage.QUERY_RESOLVE });
+
+    expect(() => gfx.resolveQuerySet(qs, 0, 2, buf)).toThrow("No active command encoder");
+  });
+
+  it("throws with invalid query set handle", () => {
+    const { gfx } = makeGfxWithTimestampQuery();
+    const qs = gfx.makeQuerySet({ count: 2 });
+    const buf = gfx.makeBuffer({ size: 16, usage: BufferUsage.QUERY_RESOLVE });
+    gfx.destroyQuerySet(qs);
+
+    gfx.beginPass();
+    gfx.endPass();
+
+    expect(() => gfx.resolveQuerySet(qs, 0, 2, buf)).toThrow("Invalid or stale query set handle");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// beginPass: timestampWrites forwarding
+// ---------------------------------------------------------------------------
+
+describe("beginPass: timestampWrites", () => {
+  it("forwards timestampWrites to the GPURenderPassDescriptor", () => {
+    const { gfx, device } = makeGfxWithTimestampQuery();
+    const qs = gfx.makeQuerySet({ count: 2 });
+
+    gfx.beginPass({
+      timestampWrites: {
+        querySet: qs,
+        beginningOfPassWriteIndex: 0,
+        endOfPassWriteIndex: 1,
+      },
+    });
+    gfx.endPass();
+
+    expect(device._lastEncoder).not.toBeNull();
+    const desc = device._lastEncoder!.lastRenderPassDesc;
+    expect(desc).not.toBeNull();
+    expect(desc!.timestampWrites).toBeDefined();
+    expect(desc!.timestampWrites!.beginningOfPassWriteIndex).toBe(0);
+    expect(desc!.timestampWrites!.endOfPassWriteIndex).toBe(1);
+  });
+
+  it("throws with invalid query set handle in timestampWrites", () => {
+    const { gfx } = makeGfxWithTimestampQuery();
+    const qs = gfx.makeQuerySet({ count: 2 });
+    gfx.destroyQuerySet(qs);
+
+    expect(() => gfx.beginPass({
+      timestampWrites: {
+        querySet: qs,
+        beginningOfPassWriteIndex: 0,
+        endOfPassWriteIndex: 1,
+      },
+    })).toThrow("Invalid query set handle");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BufferUsage: QUERY_RESOLVE and STAGING mapping
+// ---------------------------------------------------------------------------
+
+describe("BufferUsage: QUERY_RESOLVE and STAGING", () => {
+  it("creates a QUERY_RESOLVE buffer successfully", () => {
+    const gfx = makeGfx();
+    const buf = gfx.makeBuffer({ size: 16, usage: BufferUsage.QUERY_RESOLVE });
+    expect(gfx.isValid(buf)).toBe(true);
+  });
+
+  it("creates a STAGING buffer successfully", () => {
+    const gfx = makeGfx();
+    const buf = gfx.makeBuffer({ size: 16, usage: BufferUsage.STAGING });
+    expect(gfx.isValid(buf)).toBe(true);
   });
 });

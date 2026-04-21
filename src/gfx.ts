@@ -10,8 +10,9 @@
  */
 
 import {
-  type SgBuffer, type SgImage, type SgSampler, type SgShader, type SgPipeline,
+  type SgBuffer, type SgImage, type SgSampler, type SgShader, type SgPipeline, type SgQuerySet,
   type BufferDesc, type ImageDesc, type SamplerDesc, type ShaderDesc, type PipelineDesc,
+  type QuerySetDesc,
   type Bindings, type PassDesc, type Gfx, type Handle, type DrawStats, type ShaderRecompileResult,
   type TextureDimension,
   BufferUsage, IndexType, LoadAction, StoreAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
@@ -355,6 +356,11 @@ interface PipelineSlot {
   indexType: IndexType;
 }
 
+interface QuerySetSlot {
+  gpu: GPUQuerySet;
+  desc: QuerySetDesc;
+}
+
 /**
  * Create a new {@link Gfx} graphics context.
  *
@@ -381,6 +387,7 @@ export function createGfx(
   const samplerPool  = new Pool<SamplerSlot>(64);
   const shaderPool   = new Pool<ShaderSlot>(64);
   const pipelinePool = new Pool<PipelineSlot>(64);
+  const querySetPool = new Pool<QuerySetSlot>(32);
   const pipelineCache = new Map<string, GPURenderPipeline>();
   // shader handle id -> set of pipeline handle ids that reference it
   const shaderPipelineDeps = new Map<number, Set<number>>();
@@ -473,6 +480,10 @@ export function createGfx(
         return GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
       case BufferUsage.INDIRECT:
         return GPUBufferUsage.COPY_DST | GPUBufferUsage.INDIRECT;
+      case BufferUsage.QUERY_RESOLVE:
+        return GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC;
+      case BufferUsage.STAGING:
+        return GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ;
       default:
         return GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
     }
@@ -965,6 +976,43 @@ export function createGfx(
       pipelinePool.free(pip.id);
     },
 
+    makeQuerySet(desc: QuerySetDesc): SgQuerySet {
+      if (!device.features.has("timestamp-query")) {
+        throw new Error(
+          `[sokol-ts] makeQuerySet requires the "timestamp-query" device feature. ` +
+          `Request it via requiredFeatures in AppDesc.`
+        );
+      }
+      const id = querySetPool.alloc();
+      const gpu = device.createQuerySet({
+        type: "timestamp",
+        count: desc.count,
+        label: desc.label,
+      });
+      querySetPool.set(id, { gpu, desc });
+      return { _brand: "SgQuerySet", id } as SgQuerySet;
+    },
+
+    destroyQuerySet(qs: SgQuerySet) {
+      const slot = querySetPool.free(qs.id);
+      if (slot) slot.gpu.destroy();
+    },
+
+    resolveQuerySet(
+      querySet: SgQuerySet,
+      firstQuery: number,
+      queryCount: number,
+      destination: SgBuffer,
+      destinationOffset = 0,
+    ) {
+      if (!encoder) throw new Error("No active command encoder -- call beginPass/endPass before resolveQuerySet");
+      const qsSlot = querySetPool.get(querySet.id);
+      if (!qsSlot) throw new Error("Invalid or stale query set handle");
+      const bufSlot = bufferPool.get(destination.id);
+      if (!bufSlot) throw new Error("Invalid or stale buffer handle");
+      encoder.resolveQuerySet(qsSlot.gpu, firstQuery, queryCount, bufSlot.gpu, destinationOffset);
+    },
+
     isValid(handle: Handle): boolean {
       switch (handle._brand) {
         case "SgBuffer":   return bufferPool.get(handle.id)   !== undefined;
@@ -972,6 +1020,7 @@ export function createGfx(
         case "SgSampler":  return samplerPool.get(handle.id)  !== undefined;
         case "SgShader":   return shaderPool.get(handle.id)   !== undefined;
         case "SgPipeline": return pipelinePool.get(handle.id) !== undefined;
+        case "SgQuerySet": return querySetPool.get(handle.id) !== undefined;
         default: return false;
       }
     },
@@ -1021,8 +1070,9 @@ export function createGfx(
     },
 
     shutdown() {
-      for (const slot of bufferPool.liveResources())  { slot.gpu.destroy(); }
-      for (const slot of imagePool.liveResources())   { slot.texture.destroy(); }
+      for (const slot of bufferPool.liveResources())   { slot.gpu.destroy(); }
+      for (const slot of imagePool.liveResources())    { slot.texture.destroy(); }
+      for (const slot of querySetPool.liveResources()) { slot.gpu.destroy(); }
       // samplers, shaders, pipelines have no GPU destroy call
 
       const leakedBuffers   = bufferPool.liveResources();
@@ -1030,14 +1080,17 @@ export function createGfx(
       const leakedSamplers  = samplerPool.liveResources();
       const leakedShaders   = shaderPool.liveResources();
       const leakedPipelines = pipelinePool.liveResources();
+      const leakedQuerySets = querySetPool.liveResources();
 
       const leaked = leakedBuffers.length + leakedImages.length +
-                     leakedSamplers.length + leakedShaders.length + leakedPipelines.length;
+                     leakedSamplers.length + leakedShaders.length +
+                     leakedPipelines.length + leakedQuerySets.length;
       if (leaked > 0) {
         const labels: string[] = [];
         for (const s of leakedBuffers)   { if (s.desc.label)   labels.push(s.desc.label); }
         for (const s of leakedImages)    { if (s.desc.label)   labels.push(s.desc.label); }
         for (const s of leakedPipelines) { if (s.desc.label)   labels.push(s.desc.label); }
+        for (const s of leakedQuerySets) { if (s.desc.label)   labels.push(s.desc.label); }
         const labelStr = labels.length > 0 ? ` (${labels.join(", ")})` : "";
         console.warn(`[sokol-ts] shutdown: ${leaked} resource(s) not explicitly destroyed${labelStr}`);
       }
@@ -1109,6 +1162,19 @@ export function createGfx(
         depthView = depthSlot.view;
       }
 
+      // Resolve optional timestampWrites
+      let gpuTimestampWrites: GPURenderPassTimestampWrites | undefined;
+      if (desc?.timestampWrites) {
+        const tw = desc.timestampWrites;
+        const qsSlot = querySetPool.get(tw.querySet.id);
+        if (!qsSlot) throw new Error("Invalid query set handle in timestampWrites");
+        gpuTimestampWrites = {
+          querySet: qsSlot.gpu,
+          beginningOfPassWriteIndex: tw.beginningOfPassWriteIndex,
+          endOfPassWriteIndex: tw.endOfPassWriteIndex,
+        };
+      }
+
       const passDescGpu: GPURenderPassDescriptor = {
         colorAttachments,
         depthStencilAttachment: depthView ? {
@@ -1119,6 +1185,7 @@ export function createGfx(
           stencilLoadOp: "clear",
           stencilStoreOp: "store",
         } : undefined,
+        timestampWrites: gpuTimestampWrites,
       };
 
       passEncoder = encoder.beginRenderPass(passDescGpu);
