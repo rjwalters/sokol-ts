@@ -109,7 +109,7 @@ Each `applyUniforms(data)` call writes into a shared 64 KB ring buffer that is r
 npm install
 npm run lint            # type-check (tsc --noEmit)
 npm test                # unit tests (vitest)
-npm run test:e2e        # e2e tests (playwright, 9 tests -- renders all examples in Chromium)
+npm run test:e2e        # e2e tests (playwright -- renders all examples in Chromium)
 npm run build           # emit to dist/
 npm run docs            # generate TypeDoc API docs
 ```
