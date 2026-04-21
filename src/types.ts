@@ -434,6 +434,46 @@ export interface ShaderDesc {
   label?: string;
 }
 
+/**
+ * Descriptor for creating a compute shader via {@link Gfx.makeComputeShader}.
+ */
+export interface ComputeShaderDesc {
+  /** WGSL source containing the compute entry point. */
+  source: string;
+  /** Compute stage entry point function name. Default: `"cs_main"`. */
+  entryPoint?: string;
+  /** Debug label for GPU debugging tools. */
+  label?: string;
+}
+
+/**
+ * Descriptor for a storage buffer binding in a compute pipeline.
+ */
+export interface ComputeStorageBufferBinding {
+  /** Whether this buffer is read-only in the compute shader. Default: false (read-write). */
+  readOnly?: boolean;
+}
+
+/**
+ * Descriptor for creating a compute pipeline via {@link Gfx.makeComputePipeline}.
+ */
+export interface ComputePipelineDesc {
+  /** Shader to use for this pipeline. Must have been created via {@link Gfx.makeComputeShader}. */
+  shader: SgShader;
+  /** Number of storage buffer bindings (group 1, bindings 0..N-1). Default: 0. */
+  storageBuffers?: number | ComputeStorageBufferBinding[];
+  /** Whether the compute pipeline uses uniforms (group 0). Default: false. */
+  uniforms?: boolean;
+  /** Debug label for GPU debugging tools. */
+  label?: string;
+}
+
+/** Resource bindings applied per compute dispatch via {@link Gfx.applyComputeBindings}. */
+export interface ComputeBindings {
+  /** Storage buffers to bind in bind group 1 (bindings 0..N-1). */
+  storageBuffers?: SgBuffer[];
+}
+
 export interface BlendComponentDesc {
   srcFactor?: BlendFactor;
   dstFactor?: BlendFactor;
@@ -724,6 +764,23 @@ export interface Gfx {
   makePipeline(desc: PipelineDesc): SgPipeline;
 
   /**
+   * Compile WGSL source and create a compute shader.
+   *
+   * Throws if compilation produces errors.
+   *
+   * @param desc - Compute shader descriptor with WGSL source.
+   * @returns An opaque shader handle.
+   */
+  makeComputeShader(desc: ComputeShaderDesc): Promise<SgShader>;
+
+  /**
+   * Create a compute pipeline.
+   * @param desc - Compute pipeline descriptor.
+   * @returns An opaque pipeline handle.
+   */
+  makeComputePipeline(desc: ComputePipelineDesc): SgPipeline;
+
+  /**
    * Hot-recompile a shader with new source code.
    *
    * On success the shader's GPU modules are atomically swapped; dependent
@@ -899,7 +956,47 @@ export interface Gfx {
    */
   drawIndirect(indirectBuffer: SgBuffer, indirectOffset?: number): void;
 
-  /** End the current render pass. Safe to call when no pass is active. */
+  /**
+   * Begin a compute pass.
+   *
+   * Multiple passes per frame are supported (the command encoder is shared).
+   *
+   * @param opts - Optional options for the compute pass.
+   */
+  beginComputePass(opts?: { label?: string }): void;
+
+  /**
+   * Set the active compute pipeline for subsequent dispatch commands.
+   * @param pip - Compute pipeline handle to bind.
+   */
+  applyComputePipeline(pip: SgPipeline): void;
+
+  /**
+   * Bind storage buffers and resources for the current compute dispatch.
+   * @param bind - Compute resource bindings.
+   */
+  applyComputeBindings(bind: ComputeBindings): void;
+
+  /**
+   * Dispatch compute workgroups on the active compute pass.
+   *
+   * @param x - Number of workgroups in the X dimension.
+   * @param y - Number of workgroups in the Y dimension. Default: 1.
+   * @param z - Number of workgroups in the Z dimension. Default: 1.
+   */
+  dispatchWorkgroups(x: number, y?: number, z?: number): void;
+
+  /**
+   * Dispatch compute workgroups using indirect arguments from a buffer.
+   *
+   * The buffer must contain a struct with three u32 values: (x, y, z).
+   *
+   * @param buf - Buffer containing indirect dispatch arguments.
+   * @param offsetBytes - Byte offset into the buffer. Default: 0.
+   */
+  dispatchWorkgroupsIndirect(buf: SgBuffer, offsetBytes?: number): void;
+
+  /** End the current render or compute pass. Safe to call when no pass is active. */
   endPass(): void;
 
   /**
@@ -971,6 +1068,8 @@ export interface DrawStats {
   totalElements: number;
   /** Number of indirect draw calls issued this frame. */
   indirectDrawCalls: number;
+  /** Number of compute dispatch calls issued this frame. */
+  dispatchCalls: number;
 }
 
 // ---------------------------------------------------------------------------
