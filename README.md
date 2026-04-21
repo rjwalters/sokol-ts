@@ -92,7 +92,7 @@ npx vite examples/instancing      # 64 instanced triangles
 ```bash
 npm install
 npm run lint            # type-check (tsc --noEmit)
-npm test                # unit tests (vitest, 43 tests)
+npm test                # unit tests (vitest)
 npm run test:e2e        # e2e tests (playwright, 9 tests -- renders all examples in Chromium)
 npm run build           # emit to dist/
 npm run docs            # generate TypeDoc API docs
