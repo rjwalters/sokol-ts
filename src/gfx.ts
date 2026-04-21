@@ -1079,30 +1079,29 @@ export function createGfx(
       samplerPool.free(smp.id);
     },
     destroyShader(shd: SgShader) {
-      // Try both render and compute shader pools
-      const freed = shaderPool.free(shd.id);
-      if (!freed) computeShaderPool.free(shd.id);
+      shaderPool.free(shd.id);
+    },
+    destroyComputeShader(shd: SgShader) {
+      computeShaderPool.free(shd.id);
     },
     destroyPipeline(pip: SgPipeline) {
-      // Try render pipeline pool first
       const slot = pipelinePool.get(pip.id);
-      if (slot) {
-        // Remove cached GPU pipeline for this descriptor so it won't be reused stale
-        const key = pipelineKey(slot.desc);
-        pipelineCache.delete(key);
+      if (!slot) return;
+      // Remove cached GPU pipeline for this descriptor so it won't be reused stale
+      const key = pipelineKey(slot.desc);
+      pipelineCache.delete(key);
 
-        const deps = shaderPipelineDeps.get(slot.desc.shader.id);
-        deps?.delete(pip.id);
-        // Prune empty dep sets to avoid memory leaks
-        if (deps && deps.size === 0) {
-          shaderPipelineDeps.delete(slot.desc.shader.id);
-        }
-        // Invalidate cached bind groups for this pipeline
-        invalidateCachesForPipeline(pip.id);
-        pipelinePool.free(pip.id);
-        return;
+      const deps = shaderPipelineDeps.get(slot.desc.shader.id);
+      deps?.delete(pip.id);
+      // Prune empty dep sets to avoid memory leaks
+      if (deps && deps.size === 0) {
+        shaderPipelineDeps.delete(slot.desc.shader.id);
       }
-      // Try compute pipeline pool
+      // Invalidate cached bind groups for this pipeline
+      invalidateCachesForPipeline(pip.id);
+      pipelinePool.free(pip.id);
+    },
+    destroyComputePipeline(pip: SgPipeline) {
       computePipelinePool.free(pip.id);
     },
 
@@ -1148,11 +1147,17 @@ export function createGfx(
         case "SgBuffer":   return bufferPool.get(handle.id)   !== undefined;
         case "SgImage":    return imagePool.get(handle.id)    !== undefined;
         case "SgSampler":  return samplerPool.get(handle.id)  !== undefined;
-        case "SgShader":   return shaderPool.get(handle.id) !== undefined || computeShaderPool.get(handle.id) !== undefined;
-        case "SgPipeline": return pipelinePool.get(handle.id) !== undefined || computePipelinePool.get(handle.id) !== undefined;
+        case "SgShader":   return shaderPool.get(handle.id)   !== undefined;
+        case "SgPipeline": return pipelinePool.get(handle.id) !== undefined;
         case "SgQuerySet": return querySetPool.get(handle.id) !== undefined;
         default: return false;
       }
+    },
+    isValidComputeShader(shd: SgShader): boolean {
+      return computeShaderPool.get(shd.id) !== undefined;
+    },
+    isValidComputePipeline(pip: SgPipeline): boolean {
+      return computePipelinePool.get(pip.id) !== undefined;
     },
 
     updateBuffer(buf: SgBuffer, data: ArrayBufferView, dstOffset = 0) {

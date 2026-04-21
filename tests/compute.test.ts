@@ -26,7 +26,7 @@ describe("Compute: shader creation", () => {
     });
     expect(shd.id).toBeGreaterThan(0);
     expect(shd._brand).toBe("SgShader");
-    expect(gfx.isValid(shd)).toBe(true);
+    expect(gfx.isValidComputeShader(shd)).toBe(true);
   });
 
   it("uses default entry point cs_main", async () => {
@@ -34,7 +34,7 @@ describe("Compute: shader creation", () => {
     const shd = await gfx.makeComputeShader({
       source: "@compute @workgroup_size(64) fn cs_main() {}",
     });
-    expect(gfx.isValid(shd)).toBe(true);
+    expect(gfx.isValidComputeShader(shd)).toBe(true);
   });
 
   it("accepts a custom entry point", async () => {
@@ -43,7 +43,7 @@ describe("Compute: shader creation", () => {
       source: "@compute @workgroup_size(64) fn my_compute() {}",
       entryPoint: "my_compute",
     });
-    expect(gfx.isValid(shd)).toBe(true);
+    expect(gfx.isValidComputeShader(shd)).toBe(true);
   });
 });
 
@@ -63,7 +63,7 @@ describe("Compute: pipeline creation", () => {
     });
     expect(pip.id).toBeGreaterThan(0);
     expect(pip._brand).toBe("SgPipeline");
-    expect(gfx.isValid(pip)).toBe(true);
+    expect(gfx.isValidComputePipeline(pip)).toBe(true);
   });
 
   it("creates a compute pipeline with uniforms", async () => {
@@ -76,7 +76,7 @@ describe("Compute: pipeline creation", () => {
       storageBuffers: 1,
       uniforms: true,
     });
-    expect(gfx.isValid(pip)).toBe(true);
+    expect(gfx.isValidComputePipeline(pip)).toBe(true);
   });
 
   it("creates a compute pipeline with read-only storage bindings", async () => {
@@ -88,7 +88,7 @@ describe("Compute: pipeline creation", () => {
       shader: shd,
       storageBuffers: [{ readOnly: true }, { readOnly: false }],
     });
-    expect(gfx.isValid(pip)).toBe(true);
+    expect(gfx.isValidComputePipeline(pip)).toBe(true);
   });
 
   it("throws on invalid compute shader handle", () => {
@@ -109,9 +109,9 @@ describe("Compute: pipeline destroy and isValid", () => {
       source: "@compute @workgroup_size(64) fn cs_main() {}",
     });
     const pip = gfx.makeComputePipeline({ shader: shd, storageBuffers: 1 });
-    expect(gfx.isValid(pip)).toBe(true);
-    gfx.destroyPipeline(pip);
-    expect(gfx.isValid(pip)).toBe(false);
+    expect(gfx.isValidComputePipeline(pip)).toBe(true);
+    gfx.destroyComputePipeline(pip);
+    expect(gfx.isValidComputePipeline(pip)).toBe(false);
   });
 
   it("marks compute shader as invalid after destroy", async () => {
@@ -119,9 +119,51 @@ describe("Compute: pipeline destroy and isValid", () => {
     const shd = await gfx.makeComputeShader({
       source: "@compute @workgroup_size(64) fn cs_main() {}",
     });
-    expect(gfx.isValid(shd)).toBe(true);
-    gfx.destroyShader(shd);
-    expect(gfx.isValid(shd)).toBe(false);
+    expect(gfx.isValidComputeShader(shd)).toBe(true);
+    gfx.destroyComputeShader(shd);
+    expect(gfx.isValidComputeShader(shd)).toBe(false);
+  });
+
+  it("destroyComputeShader does not affect render shader with same-index handle", async () => {
+    const gfx = makeGfx();
+    // Both pools start at slot 1, so first alloc from each produces the same encoded ID.
+    const renderShd = await gfx.makeShader({
+      source: "@vertex fn vs_main() -> @builtin(position) vec4f { return vec4f(0); }\n@fragment fn fs_main() -> @location(0) vec4f { return vec4f(1); }",
+    });
+    const computeShd = await gfx.makeComputeShader({
+      source: "@compute @workgroup_size(64) fn cs_main() {}",
+    });
+    // Both should be valid in their respective pools
+    expect(gfx.isValid(renderShd)).toBe(true);
+    expect(gfx.isValidComputeShader(computeShd)).toBe(true);
+
+    // Destroying compute shader must NOT affect render shader
+    gfx.destroyComputeShader(computeShd);
+    expect(gfx.isValid(renderShd)).toBe(true);
+    expect(gfx.isValidComputeShader(computeShd)).toBe(false);
+  });
+
+  it("destroyComputePipeline does not affect render pipeline with same-index handle", async () => {
+    const gfx = makeGfx();
+    const renderShd = await gfx.makeShader({
+      source: "@vertex fn vs_main() -> @builtin(position) vec4f { return vec4f(0); }\n@fragment fn fs_main() -> @location(0) vec4f { return vec4f(1); }",
+    });
+    const computeShd = await gfx.makeComputeShader({
+      source: "@compute @workgroup_size(64) fn cs_main() {}",
+    });
+    const renderPip = gfx.makePipeline({
+      shader: renderShd,
+      layout: { buffers: [{ stride: 16 }], attrs: [{ format: "float32x4" as never, shaderLocation: 0 }] },
+    });
+    const computePip = gfx.makeComputePipeline({ shader: computeShd, storageBuffers: 1 });
+
+    expect(gfx.isValid(renderPip)).toBe(true);
+    expect(gfx.isValidComputePipeline(computePip)).toBe(true);
+
+    // Destroying compute pipeline must NOT affect render pipeline
+    gfx.destroyComputePipeline(computePip);
+    expect(gfx.isValid(renderPip)).toBe(true);
+    expect(gfx.isValidComputePipeline(computePip)).toBe(false);
   });
 });
 

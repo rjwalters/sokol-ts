@@ -816,16 +816,28 @@ export interface Gfx {
   destroySampler(smp: SgSampler): void;
 
   /**
-   * Destroy a shader.
-   * @param shd - Shader handle to destroy.
+   * Destroy a render shader.
+   * @param shd - Shader handle created via {@link makeShader}.
    */
   destroyShader(shd: SgShader): void;
 
   /**
-   * Destroy a pipeline and remove its shader dependency tracking.
-   * @param pip - Pipeline handle to destroy.
+   * Destroy a compute shader.
+   * @param shd - Shader handle created via {@link makeComputeShader}.
+   */
+  destroyComputeShader(shd: SgShader): void;
+
+  /**
+   * Destroy a render pipeline and remove its shader dependency tracking.
+   * @param pip - Pipeline handle created via {@link makePipeline}.
    */
   destroyPipeline(pip: SgPipeline): void;
+
+  /**
+   * Destroy a compute pipeline.
+   * @param pip - Pipeline handle created via {@link makeComputePipeline}.
+   */
+  destroyComputePipeline(pip: SgPipeline): void;
 
   /**
    * Create a GPU query set for timestamp queries.
@@ -866,10 +878,29 @@ export interface Gfx {
 
   /**
    * Check whether a resource handle is still valid (not destroyed).
+   *
+   * For render shaders and render pipelines, checks only the render pools.
+   * Use {@link isValidComputeShader} / {@link isValidComputePipeline} for
+   * compute resources.
+   *
    * @param handle - Any GPU resource handle.
    * @returns `true` if the handle refers to a live resource.
    */
   isValid(handle: Handle): boolean;
+
+  /**
+   * Check whether a compute shader handle is still valid.
+   * @param shd - Shader handle created via {@link makeComputeShader}.
+   * @returns `true` if the handle refers to a live compute shader.
+   */
+  isValidComputeShader(shd: SgShader): boolean;
+
+  /**
+   * Check whether a compute pipeline handle is still valid.
+   * @param pip - Pipeline handle created via {@link makeComputePipeline}.
+   * @returns `true` if the handle refers to a live compute pipeline.
+   */
+  isValidComputePipeline(pip: SgPipeline): boolean;
 
   /**
    * Upload new data to an existing buffer.
