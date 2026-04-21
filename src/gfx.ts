@@ -13,6 +13,7 @@ import {
   type SgBuffer, type SgImage, type SgSampler, type SgShader, type SgPipeline, type SgQuerySet,
   type BufferDesc, type ImageDesc, type SamplerDesc, type ShaderDesc, type PipelineDesc,
   type QuerySetDesc,
+  type ComputeShaderDesc, type ComputePipelineDesc, type ComputeBindings,
   type Bindings, type PassDesc, type Gfx, type Handle, type DrawStats, type ShaderRecompileResult,
   type TextureDimension,
   BufferUsage, IndexType, LoadAction, StoreAction, PixelFormat, PrimitiveType, CullMode, CompareFunc,
@@ -361,6 +362,18 @@ interface QuerySetSlot {
   desc: QuerySetDesc;
 }
 
+interface ComputeShaderSlot {
+  computeModule: GPUShaderModule;
+  entryPoint: string;
+  source: string;
+}
+
+interface ComputePipelineSlot {
+  gpu: GPUComputePipeline;
+  desc: ComputePipelineDesc;
+  storageBindGroupLayout: GPUBindGroupLayout | null;
+}
+
 /**
  * Create a new {@link Gfx} graphics context.
  *
@@ -388,6 +401,8 @@ export function createGfx(
   const shaderPool   = new Pool<ShaderSlot>(64);
   const pipelinePool = new Pool<PipelineSlot>(64);
   const querySetPool = new Pool<QuerySetSlot>(32);
+  const computeShaderPool = new Pool<ComputeShaderSlot>(64);
+  const computePipelinePool = new Pool<ComputePipelineSlot>(64);
   const pipelineCache = new Map<string, GPURenderPipeline>();
   // shader handle id -> set of pipeline handle ids that reference it
   const shaderPipelineDeps = new Map<number, Set<number>>();
@@ -395,6 +410,8 @@ export function createGfx(
   // Per-frame state
   let encoder: GPUCommandEncoder | null = null;
   let passEncoder: GPURenderPassEncoder | null = null;
+  let computePassEncoder: GPUComputePassEncoder | null = null;
+  let currentComputePipeline: ComputePipelineSlot | null = null;
   let currentPipeline: PipelineSlot | null = null;
   let currentPipelineId = 0;
   let frameTime = 0;
@@ -403,7 +420,7 @@ export function createGfx(
   let uniformOffset = 0;
   let boundVertexBuffers: BufferSlot[] = [];
   let boundIndexBuffer: BufferSlot | null = null;
-  let _frameStats: DrawStats = { drawCalls: 0, totalElements: 0, indirectDrawCalls: 0 };
+  let _frameStats: DrawStats = { drawCalls: 0, totalElements: 0, indirectDrawCalls: 0, dispatchCalls: 0 };
 
   // Texture/sampler bind group cache (group 1): keyed on "pipelineId:img1,img2,...:smp1,smp2,..."
   const textureSamplerBindGroupCache = new Map<string, GPUBindGroup>();
@@ -429,6 +446,18 @@ export function createGfx(
     }],
   });
 
+  // Shared bind group layout for compute uniform ring buffers (group 0, binding 0, dynamic offset)
+  const computeUniformBindGroupLayout = device.createBindGroupLayout({
+    entries: [{
+      binding: 0,
+      visibility: GPUShaderStage.COMPUTE,
+      buffer: { type: "uniform", hasDynamicOffset: true },
+    }],
+  });
+
+  // Compute uniform bind groups (reuse the same buffers but with COMPUTE visibility layout)
+  const computeUniformBindGroups: GPUBindGroup[] = [];
+
   // Allocate NUM_FRAMES_IN_FLIGHT uniform buffers and one bind group per slot up front
   const uniformBuffers: GPUBuffer[] = [];
   const uniformBindGroups: GPUBindGroup[] = [];
@@ -444,6 +473,11 @@ export function createGfx(
       entries: [{ binding: 0, resource: { buffer: buf, size: UNIFORM_SLOT_SIZE } }],
       label: `uniform_bind_group_${i}`,
     }));
+    computeUniformBindGroups.push(device.createBindGroup({
+      layout: computeUniformBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: buf, size: UNIFORM_BUFFER_SIZE } }],
+      label: `compute_uniform_bind_group_${i}`,
+    }));
   }
 
   function currentUniformBuffer() {
@@ -452,6 +486,10 @@ export function createGfx(
 
   function currentUniformBindGroup() {
     return uniformBindGroups[uniformFrameIndex];
+  }
+
+  function currentComputeUniformBindGroup() {
+    return computeUniformBindGroups[uniformFrameIndex];
   }
 
   function pipelineKey(desc: PipelineDesc): string {
@@ -487,7 +525,7 @@ export function createGfx(
       case BufferUsage.STAGING:
         return GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ;
       case BufferUsage.STORAGE:
-        return GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+        return GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
       default:
         return GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX;
     }
@@ -896,6 +934,72 @@ export function createGfx(
       return { _brand: "SgPipeline", id } as SgPipeline;
     },
 
+    async makeComputeShader(desc: ComputeShaderDesc): Promise<SgShader> {
+      const id = computeShaderPool.alloc();
+      const computeModule = device.createShaderModule({
+        code: desc.source,
+        label: desc.label ? `${desc.label}_cs` : undefined,
+      });
+
+      const info = await computeModule.getCompilationInfo();
+      for (const msg of info.messages) {
+        const loc = `${msg.lineNum}:${msg.linePos}`;
+        if (msg.type === "error") throw new Error(`[compute shader] ${loc}: ${msg.message}`);
+        if (msg.type === "warning") console.warn(`[compute shader] ${loc}: ${msg.message}`);
+      }
+
+      const entryPoint = desc.entryPoint ?? "cs_main";
+      computeShaderPool.set(id, { computeModule, entryPoint, source: desc.source });
+      return { _brand: "SgShader", id } as SgShader;
+    },
+
+    makeComputePipeline(desc: ComputePipelineDesc): SgPipeline {
+      const shd = computeShaderPool.get(desc.shader.id);
+      if (!shd) throw new Error("Invalid or stale compute shader handle");
+      const id = computePipelinePool.alloc();
+
+      const bindGroupLayouts: GPUBindGroupLayout[] = [];
+
+      // Group 0: uniform buffer (if uniforms are used)
+      if (desc.uniforms) {
+        bindGroupLayouts.push(computeUniformBindGroupLayout);
+      }
+
+      // Group 1 (or 0 if no uniforms): storage buffers
+      const storageCount = Array.isArray(desc.storageBuffers)
+        ? desc.storageBuffers.length
+        : (desc.storageBuffers ?? 0);
+      let storageBindGroupLayout: GPUBindGroupLayout | null = null;
+      if (storageCount > 0) {
+        const entries: GPUBindGroupLayoutEntry[] = [];
+        for (let i = 0; i < storageCount; i++) {
+          const binding = Array.isArray(desc.storageBuffers) ? desc.storageBuffers[i] : undefined;
+          const readOnly = binding?.readOnly ?? false;
+          entries.push({
+            binding: i,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: readOnly ? "read-only-storage" : "storage" },
+          });
+        }
+        storageBindGroupLayout = device.createBindGroupLayout({ entries });
+        bindGroupLayouts.push(storageBindGroupLayout);
+      }
+
+      const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts });
+
+      const gpu = device.createComputePipeline({
+        layout: pipelineLayout,
+        compute: {
+          module: shd.computeModule,
+          entryPoint: shd.entryPoint,
+        },
+        label: desc.label,
+      });
+
+      computePipelinePool.set(id, { gpu, desc, storageBindGroupLayout });
+      return { _brand: "SgPipeline", id } as SgPipeline;
+    },
+
     async recompileShader(
       shd: SgShader,
       sources: { vertexSource?: string; fragmentSource?: string },
@@ -974,24 +1078,31 @@ export function createGfx(
       invalidateTextureSamplerCacheForResource(smp.id, "smp");
       samplerPool.free(smp.id);
     },
-    destroyShader(shd: SgShader) { shaderPool.free(shd.id); },
+    destroyShader(shd: SgShader) {
+      shaderPool.free(shd.id);
+    },
+    destroyComputeShader(shd: SgShader) {
+      computeShaderPool.free(shd.id);
+    },
     destroyPipeline(pip: SgPipeline) {
       const slot = pipelinePool.get(pip.id);
-      if (slot) {
-        // Remove cached GPU pipeline for this descriptor so it won't be reused stale
-        const key = pipelineKey(slot.desc);
-        pipelineCache.delete(key);
+      if (!slot) return;
+      // Remove cached GPU pipeline for this descriptor so it won't be reused stale
+      const key = pipelineKey(slot.desc);
+      pipelineCache.delete(key);
 
-        const deps = shaderPipelineDeps.get(slot.desc.shader.id);
-        deps?.delete(pip.id);
-        // Prune empty dep sets to avoid memory leaks
-        if (deps && deps.size === 0) {
-          shaderPipelineDeps.delete(slot.desc.shader.id);
-        }
-        // Invalidate cached bind groups for this pipeline
-        invalidateCachesForPipeline(pip.id);
+      const deps = shaderPipelineDeps.get(slot.desc.shader.id);
+      deps?.delete(pip.id);
+      // Prune empty dep sets to avoid memory leaks
+      if (deps && deps.size === 0) {
+        shaderPipelineDeps.delete(slot.desc.shader.id);
       }
+      // Invalidate cached bind groups for this pipeline
+      invalidateCachesForPipeline(pip.id);
       pipelinePool.free(pip.id);
+    },
+    destroyComputePipeline(pip: SgPipeline) {
+      computePipelinePool.free(pip.id);
     },
 
     makeQuerySet(desc: QuerySetDesc): SgQuerySet {
@@ -1041,6 +1152,12 @@ export function createGfx(
         case "SgQuerySet": return querySetPool.get(handle.id) !== undefined;
         default: return false;
       }
+    },
+    isValidComputeShader(shd: SgShader): boolean {
+      return computeShaderPool.get(shd.id) !== undefined;
+    },
+    isValidComputePipeline(pip: SgPipeline): boolean {
+      return computePipelinePool.get(pip.id) !== undefined;
     },
 
     updateBuffer(buf: SgBuffer, data: ArrayBufferView, dstOffset = 0) {
@@ -1099,16 +1216,20 @@ export function createGfx(
       const leakedShaders   = shaderPool.liveResources();
       const leakedPipelines = pipelinePool.liveResources();
       const leakedQuerySets = querySetPool.liveResources();
+      const leakedComputeShaders   = computeShaderPool.liveResources();
+      const leakedComputePipelines = computePipelinePool.liveResources();
 
       const leaked = leakedBuffers.length + leakedImages.length +
                      leakedSamplers.length + leakedShaders.length +
-                     leakedPipelines.length + leakedQuerySets.length;
+                     leakedPipelines.length + leakedQuerySets.length +
+                     leakedComputeShaders.length + leakedComputePipelines.length;
       if (leaked > 0) {
         const labels: string[] = [];
         for (const s of leakedBuffers)   { if (s.desc.label)   labels.push(s.desc.label); }
         for (const s of leakedImages)    { if (s.desc.label)   labels.push(s.desc.label); }
         for (const s of leakedPipelines) { if (s.desc.label)   labels.push(s.desc.label); }
         for (const s of leakedQuerySets) { if (s.desc.label)   labels.push(s.desc.label); }
+        for (const s of leakedComputePipelines) { if (s.desc.label) labels.push(s.desc.label); }
         const labelStr = labels.length > 0 ? ` (${labels.join(", ")})` : "";
         console.warn(`[sokol-ts] shutdown: ${leaked} resource(s) not explicitly destroyed${labelStr}`);
       }
@@ -1209,7 +1330,7 @@ export function createGfx(
       passEncoder = encoder.beginRenderPass(passDescGpu);
       boundVertexBuffers = [];
       boundIndexBuffer = null;
-      _frameStats = { drawCalls: 0, totalElements: 0, indirectDrawCalls: 0 };
+      _frameStats = { drawCalls: 0, totalElements: 0, indirectDrawCalls: 0, dispatchCalls: 0 };
     },
 
     applyPipeline(pip: SgPipeline) {
@@ -1286,7 +1407,8 @@ export function createGfx(
     },
 
     applyUniforms(data: ArrayBufferView) {
-      if (!passEncoder) throw new Error("No active pass");
+      const activeEncoder = passEncoder ?? computePassEncoder;
+      if (!activeEncoder) throw new Error("No active pass");
 
       // Align to 256 bytes (WebGPU requirement for dynamic offsets)
       const alignedOffset = Math.ceil(uniformOffset / 256) * 256;
@@ -1303,8 +1425,12 @@ export function createGfx(
       const ub = currentUniformBuffer();
       device.queue.writeBuffer(ub, alignedOffset, data.buffer, data.byteOffset, data.byteLength);
 
-      // Use the pre-created bind group for this ring slot; supply the dynamic offset
-      passEncoder.setBindGroup(0, currentUniformBindGroup(), [alignedOffset]);
+      // Use the appropriate bind group based on pass type
+      if (computePassEncoder) {
+        computePassEncoder.setBindGroup(0, currentComputeUniformBindGroup(), [alignedOffset]);
+      } else {
+        passEncoder!.setBindGroup(0, currentUniformBindGroup(), [alignedOffset]);
+      }
 
       uniformOffset = alignedOffset + slotSize;
     },
@@ -1378,10 +1504,70 @@ export function createGfx(
       _frameStats.indirectDrawCalls++;
     },
 
+    beginComputePass(opts?: { label?: string }) {
+      if (!encoder) {
+        encoder = device.createCommandEncoder();
+      }
+      computePassEncoder = encoder.beginComputePass({
+        label: opts?.label,
+      });
+      uniformOffset = 0;
+    },
+
+    applyComputePipeline(pip: SgPipeline) {
+      const slot = computePipelinePool.get(pip.id);
+      if (!slot || !computePassEncoder) throw new Error("Invalid compute pipeline or no active compute pass");
+      computePassEncoder.setPipeline(slot.gpu);
+      currentComputePipeline = slot;
+    },
+
+    applyComputeBindings(bind: ComputeBindings) {
+      if (!computePassEncoder || !currentComputePipeline) throw new Error("No active compute pass or pipeline");
+
+      const storageHandles = bind.storageBuffers ?? [];
+      if (storageHandles.length > 0) {
+        if (!currentComputePipeline.storageBindGroupLayout) {
+          throw new Error("Compute pipeline has no storage buffer bindings configured");
+        }
+        const entries: GPUBindGroupEntry[] = [];
+        for (let i = 0; i < storageHandles.length; i++) {
+          const buf = bufferPool.get(storageHandles[i].id);
+          if (!buf) throw new Error(`Invalid storage buffer at binding ${i}`);
+          entries.push({ binding: i, resource: { buffer: buf.gpu } });
+        }
+        const bg = device.createBindGroup({
+          layout: currentComputePipeline.storageBindGroupLayout,
+          entries,
+        });
+        // Storage buffers go to group 1 if uniforms are used, group 0 otherwise
+        const groupIndex = currentComputePipeline.desc.uniforms ? 1 : 0;
+        computePassEncoder.setBindGroup(groupIndex, bg);
+      }
+    },
+
+    dispatchWorkgroups(x: number, y = 1, z = 1) {
+      if (!computePassEncoder) throw new Error("No active compute pass");
+      computePassEncoder.dispatchWorkgroups(x, y, z);
+      _frameStats.dispatchCalls++;
+    },
+
+    dispatchWorkgroupsIndirect(buf: SgBuffer, offsetBytes = 0) {
+      if (!computePassEncoder) throw new Error("No active compute pass");
+      const slot = bufferPool.get(buf.id);
+      if (!slot) throw new Error("Invalid indirect buffer");
+      computePassEncoder.dispatchWorkgroupsIndirect(slot.gpu, offsetBytes);
+      _frameStats.dispatchCalls++;
+    },
+
     endPass() {
       if (passEncoder) {
         passEncoder.end();
         passEncoder = null;
+      }
+      if (computePassEncoder) {
+        computePassEncoder.end();
+        computePassEncoder = null;
+        currentComputePipeline = null;
       }
     },
 

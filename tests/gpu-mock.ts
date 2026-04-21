@@ -166,6 +166,35 @@ class MockGPUQuerySet {
 }
 
 // ---------------------------------------------------------------------------
+// Mock GPU compute pipeline
+// ---------------------------------------------------------------------------
+
+let computePipelineIdCounter = 0;
+
+class MockGPUComputePipeline {
+  readonly id = ++computePipelineIdCounter;
+
+  constructor(_desc: GPUComputePipelineDescriptor) {}
+
+  getBindGroupLayout(index: number): MockGPUBindGroupLayout {
+    return new MockGPUBindGroupLayout({ entries: [] });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Mock GPU compute pass encoder
+// ---------------------------------------------------------------------------
+
+class MockGPUComputePassEncoder {
+  ended = false;
+  setPipeline(_pipeline: MockGPUComputePipeline): void {}
+  setBindGroup(_index: number, _bindGroup: MockGPUBindGroup, _offsets?: number[]): void {}
+  dispatchWorkgroups(_x: number, _y?: number, _z?: number): void {}
+  dispatchWorkgroupsIndirect(_buffer: MockGPUBuffer, _offset: number): void {}
+  end(): void { this.ended = true; }
+}
+
+// ---------------------------------------------------------------------------
 // Mock GPU render pass encoder
 // ---------------------------------------------------------------------------
 
@@ -211,6 +240,9 @@ class MockGPUCommandEncoder {
     destinationOffset: number,
   ): void {
     this.resolveQuerySetCalls.push({ querySet, firstQuery, queryCount, destination, destinationOffset });
+  }
+  beginComputePass(_desc?: GPUComputePassDescriptor): MockGPUComputePassEncoder {
+    return new MockGPUComputePassEncoder();
   }
   finish(): MockGPUCommandBuffer {
     return new MockGPUCommandBuffer();
@@ -288,6 +320,9 @@ export function createMockDevice(): GPUDevice & { _lastEncoder: MockGPUCommandEn
     },
     createQuerySet(desc: GPUQuerySetDescriptor): MockGPUQuerySet {
       return new MockGPUQuerySet(desc);
+    },
+    createComputePipeline(desc: GPUComputePipelineDescriptor): MockGPUComputePipeline {
+      return new MockGPUComputePipeline(desc);
     },
     createCommandEncoder(_desc?: GPUCommandEncoderDescriptor): MockGPUCommandEncoder {
       const enc = new MockGPUCommandEncoder();
