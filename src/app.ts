@@ -106,7 +106,9 @@ export async function run(desc: AppDesc): Promise<() => void> {
 
   resize();
 
-  const gfx = createGfx(device, canvas, context, format);
+  const gfx = createGfx(device, canvas, context, format, {
+    uniformBufferSize: desc.uniformBufferSize,
+  });
 
   // Hoist running flag so the device.lost handler can reference it
   let running = true;

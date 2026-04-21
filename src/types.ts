@@ -589,6 +589,14 @@ export interface AppDesc {
   postFrame?: (gfx: Gfx) => void;
   /** Target frames per second. When set, frame callbacks are throttled to this rate. */
   targetFps?: number;
+  /**
+   * Size in bytes of the per-frame uniform staging buffer. Each frame uses one
+   * ring slot of this size; all `applyUniforms` calls within a single frame
+   * (across all passes) must fit. Must be a multiple of 256.
+   *
+   * Default: `4 * 1024 * 1024` (4 MB), matching upstream sokol-C.
+   */
+  uniformBufferSize?: number;
 }
 
 /**
