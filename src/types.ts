@@ -1131,13 +1131,6 @@ export interface AudioDesc {
 }
 
 /**
- * Reserved handle for future multi-stream audio support.
- *
- * Currently unused; the initial implementation uses one stream per Audio instance.
- */
-export interface SaudioStream { readonly _brand: "SaudioStream"; readonly id: number }
-
-/**
  * Audio playback context returned by {@link createAudio}.
  *
  * Manages an AudioWorklet-based audio pipeline with automatic
