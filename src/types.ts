@@ -317,13 +317,6 @@ export interface QuerySetDesc {
 export interface BufferDesc {
   /** Buffer usage hint. Default: {@link BufferUsage.IMMUTABLE}. */
   usage?: BufferUsage;
-  /**
-   * Storage buffer access mode. Only relevant when `usage` is {@link BufferUsage.STORAGE}.
-   * - `"read"`: shader can only read (maps to `"read-only-storage"` bind group layout type).
-   * - `"readwrite"`: shader can read and write (maps to `"storage"` bind group layout type).
-   * Default: `"readwrite"`.
-   */
-  access?: "read" | "readwrite";
   /** Initial data to upload. If provided, the buffer size is derived from this. */
   data?: ArrayBufferView;
   /** Buffer size in bytes. Used when `data` is not provided. Default: 256. */

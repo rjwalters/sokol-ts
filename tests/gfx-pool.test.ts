@@ -266,15 +266,9 @@ describe("Buffer: storage buffer creation", () => {
     ).not.toThrow();
   });
 
-  it("creates storage buffer with read access mode", () => {
+  it("creates storage buffer", () => {
     const gfx = makeGfx();
-    const buf = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE, access: "read" });
-    expect(gfx.isValid(buf)).toBe(true);
-  });
-
-  it("creates storage buffer with readwrite access mode", () => {
-    const gfx = makeGfx();
-    const buf = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE, access: "readwrite" });
+    const buf = gfx.makeBuffer({ size: 256, usage: BufferUsage.STORAGE });
     expect(gfx.isValid(buf)).toBe(true);
   });
 });
