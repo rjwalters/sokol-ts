@@ -4,6 +4,7 @@ const EXAMPLES = [
   { name: "triangle", path: "/examples/triangle/index.html" },
   { name: "instancing", path: "/examples/instancing/index.html" },
   { name: "cube", path: "/examples/cube/index.html" },
+  { name: "benchmark", path: "/examples/benchmark/index.html" },
 ];
 
 for (const example of EXAMPLES) {
