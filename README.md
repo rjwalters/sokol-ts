@@ -1,5 +1,7 @@
 # sokol-ts
 
+[![Built with Loom](https://img.shields.io/badge/Built_with-Loom-blue?logo=github)](https://github.com/rjwalters/loom)
+
 A lightweight WebGPU graphics library for TypeScript, inspired by the [Sokol](https://github.com/floooh/sokol) C headers.
 
 sokol-ts wraps the WebGPU API in a thin, Sokol-style interface: branded resource handles, descriptor-based creation, and a simple `beginPass / applyPipeline / draw / endPass / commit` render loop. No build-time code generation, no heavyweight abstractions -- just typed functions over a GPU device.
